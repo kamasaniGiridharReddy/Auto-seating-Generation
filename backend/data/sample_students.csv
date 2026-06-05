@@ -1,0 +1,13 @@
+Booking ID,Student UID,Student Name,NIAT ID,Campus,Slot Centre,Batch,Section,Contest Date,Time Slot,Skill,Skill Level
+B001,UID001,Arjun Mehta,NIAT1001,Hyderabad,Centre A,2024-A,A,2026-06-15,Morning,Python,Intermediate
+B002,UID002,Priya Sharma,NIAT1002,Hyderabad,Centre A,2024-A,A,2026-06-15,Morning,Java,Beginner
+B003,UID003,Rahul Verma,NIAT1003,Hyderabad,Centre A,2024-A,A,2026-06-15,Morning,Python,Advanced
+B004,UID004,Sneha Reddy,NIAT1004,Hyderabad,Centre A,2024-A,A,2026-06-15,Morning,SQL,Intermediate
+B005,UID005,Karan Singh,NIAT1005,Hyderabad,Centre A,2024-A,A,2026-06-15,Morning,Java,Intermediate
+B006,UID006,Ananya Iyer,NIAT1006,Hyderabad,Centre A,2024-A,B,2026-06-15,Morning,Python,Beginner
+B007,UID007,Vikram Nair,NIAT1007,Hyderabad,Centre A,2024-A,B,2026-06-15,Morning,Java,Advanced
+B008,UID008,Meera Patel,NIAT1008,Hyderabad,Centre A,2024-A,B,2026-06-15,Morning,SQL,Beginner
+B009,UID009,Aditya Rao,NIAT1009,Hyderabad,Centre A,2024-A,B,2026-06-15,Afternoon,Python,Intermediate
+B010,UID010,Divya Krishnan,NIAT1010,Hyderabad,Centre A,2024-A,B,2026-06-15,Afternoon,Java,Intermediate
+B011,UID011,Rohan Das,NIAT1011,Hyderabad,Centre A,2024-A,B,2026-06-15,Afternoon,SQL,Advanced
+B012,UID012,Kavya Menon,NIAT1012,Hyderabad,Centre A,2024-A,B,2026-06-15,Afternoon,Python,Beginner

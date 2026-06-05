@@ -1,0 +1,24 @@
+/**
+ * GRIT / NIAT premium branding — brown & red palette.
+ */
+:root {
+  --grit-brown-900: #2c1810;
+  --grit-brown-800: #3d2318;
+  --grit-brown-700: #5c3a2e;
+  --grit-brown-600: #7a4f3f;
+  --grit-red-600: #8b2635;
+  --grit-red-500: #a83240;
+  --grit-red-400: #c44d5a;
+  --grit-cream: #f5ebe0;
+  --grit-gold: #c9a227;
+}
+
+body {
+  @apply bg-[var(--grit-brown-900)] text-[var(--grit-cream)] antialiased;
+  font-family: 'DM Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Auth pages: prevent double scroll on mobile */
+html:has(.auth-page-root) {
+  scroll-behavior: smooth;
+}
