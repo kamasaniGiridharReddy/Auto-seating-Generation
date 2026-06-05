@@ -46,7 +46,15 @@ def create_app(config_name=None):
     # Initialize extensions
     db.init_app(app)
     migrate.init_app(app, db)
-    cors.init_app(app)
+    cors.init_app(
+        app,
+        resources={
+            r"/api/*": {
+                "origins": "*"
+            }
+        },
+        supports_credentials=True
+    )
 
     # Register blueprints
     from app.routes import auth_bp, dashboard_bp, export_bp, seating_bp, upload_bp
