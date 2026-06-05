@@ -54,3 +54,25 @@ Open the app in your browser: `http://localhost:5173` (do not paste the URL into
 ## Status
 
 Project structure and placeholder files are in place. Business logic is not implemented yet.
+
+## Deployment
+
+### Render Settings
+
+**Root Directory:** backend
+
+**Build Command:** pip install -r requirements.txt
+
+**Start Command:** gunicorn run:app
+
+### Environment Variables
+
+The following environment variables must be configured in Render:
+
+- `DATABASE_HOST` - Railway MySQL host
+- `DATABASE_PORT` - Railway MySQL port (default: 3306)
+- `DATABASE_NAME` - Railway MySQL database name
+- `DATABASE_USER` - Railway MySQL username
+- `DATABASE_PASSWORD` - Railway MySQL password
+- `SECRET_KEY` - Flask secret key for session management
+- `FLASK_ENV=production` - Set to production mode

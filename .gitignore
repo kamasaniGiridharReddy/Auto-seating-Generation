@@ -1,14 +1,14 @@
 # Python
-backend/venv/
-backend/__pycache__/
-backend/**/__pycache__/
-backend/*.pyc
-backend/instance/*.db
-backend/.env
+venv/
+.venv/
+**/__pycache__/
+*.pyc
+instance/*.db
+.env
 
 # Node
-frontend/node_modules/
-frontend/dist/
+node_modules/
+dist/
 
 # IDE / OS
 .idea/
