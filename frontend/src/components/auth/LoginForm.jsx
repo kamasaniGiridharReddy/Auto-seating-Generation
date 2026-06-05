@@ -49,12 +49,24 @@ export default function LoginForm() {
       })
 
       console.log('[FETCH RESPONSE]', response.status)
-      const data = await response.json()
+      const text = await response.text()
+      console.log('[FETCH BODY]', text)
+
+      let data = {}
+      if (text) {
+        try {
+          data = JSON.parse(text)
+        } catch (e) {
+          console.error('Invalid JSON response', text)
+        }
+      }
 
       if (response.ok) {
         console.log('[LOGIN SUCCESS]', data)
         // Store user data in localStorage for session management
-        localStorage.setItem('user', JSON.stringify(data.user))
+        if (data.user) {
+          localStorage.setItem('user', JSON.stringify(data.user))
+        }
         navigate('/dashboard')
       } else {
         console.error('[LOGIN ERROR]', data)

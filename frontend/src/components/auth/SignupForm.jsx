@@ -65,7 +65,17 @@ export default function SignupForm() {
       })
 
       console.log('[FETCH RESPONSE]', response.status)
-      const data = await response.json()
+      const text = await response.text()
+      console.log('[FETCH BODY]', text)
+
+      let data = {}
+      if (text) {
+        try {
+          data = JSON.parse(text)
+        } catch (e) {
+          console.error('Invalid JSON response', text)
+        }
+      }
 
       if (response.ok) {
         console.log('[SIGNUP SUCCESS]', data)
