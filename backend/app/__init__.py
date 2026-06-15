@@ -1,9 +1,9 @@
-"""Flask application factory with MySQL support."""
+"""Flask application factory without database."""
 
 import os
 from flask import Flask, send_from_directory
 from app.config import config
-from app.extensions import db, migrate, cors
+from app.extensions import cors
 
 
 def create_app(config_name=None):
@@ -27,33 +27,7 @@ def create_app(config_name=None):
     )
     app.config.from_object(config[config_name])
 
-    # Debug: Print database URI (mask password)
-    uri = app.config.get('SQLALCHEMY_DATABASE_URI', '')
-    # Print the actual URI to see what's being used
-    print(f"[APP DEBUG] Raw SQLALCHEMY_DATABASE_URI: {uri}")
-    if '@' in uri:
-        # Properly mask password in URI
-        parts = uri.split('://')
-        if len(parts) == 2:
-            scheme = parts[0]
-            rest = parts[1]
-            auth_and_host = rest.split('@')
-            if len(auth_and_host) == 2:
-                auth = auth_and_host[0]
-                host = auth_and_host[1]
-                user = auth.split(':')[0] if ':' in auth else auth
-                masked_uri = f"{scheme}://{user}:****@{host}"
-            else:
-                masked_uri = uri
-        else:
-            masked_uri = uri
-    else:
-        masked_uri = uri
-    print(f"[APP DEBUG] Masked SQLALCHEMY_DATABASE_URI: {masked_uri}")
-
     # Initialize extensions
-    db.init_app(app)
-    migrate.init_app(app, db)
     # CORS not needed for same-domain deployment (React served by Flask)
     # Keeping for API flexibility if needed in future
     cors.init_app(app, resources={r"/api/*": {"origins": "*"}})
@@ -66,13 +40,10 @@ def create_app(config_name=None):
     app.register_blueprint(seating_bp)
     app.register_blueprint(upload_bp)
 
-    # Import models to ensure they're registered with SQLAlchemy
-    from app.models import student, classroom, bench
-
     @app.route('/health')
     def health():
         """Health check endpoint."""
-        return {'status': 'healthy', 'database': 'MySQL'}
+        return {'status': 'healthy'}
 
     # Catch-all route to serve React app for non-API routes
     @app.route('/', defaults={'path': ''})
