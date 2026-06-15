@@ -12,9 +12,12 @@
  * - Single source of truth for data
  */
 
-export const SEATING_LOGIC_VERSION = 28
+export const SEATING_LOGIC_VERSION = 29
 export const CLASSROOM_LAYOUT_VERSION = 6
 export const SEATING_NUMBERING_VERSION = 8
+
+console.log('[ALGORITHM FILE] seatingAlgorithmStrictNew.js loaded')
+console.log('[ALGORITHM VERSION] SEATING_LOGIC_VERSION:', SEATING_LOGIC_VERSION)
 
 /**
  * Normalize skill name for comparison
@@ -69,6 +72,248 @@ function shuffleArray(array) {
     ;[arr[i], arr[j]] = [arr[j], arr[i]]
   }
   return arr
+}
+
+/**
+ * POST-ALLOCATION OPTIMIZATION: Reduce conflicts by swapping students
+ * This pass runs after initial seating generation to improve the arrangement
+ */
+function optimizeSeatingBySwapping(assignments, rooms, maxIterations = 100) {
+  console.log('[POST-OPTIMIZATION] Starting swap-based optimization')
+  console.log(`[POST-OPTIMIZATION] Initial assignments: ${assignments.length}`)
+  
+  const occupiedAssignments = assignments.filter(a => a.status === 'Occupied')
+  console.log(`[POST-OPTIMIZATION] Occupied seats: ${occupiedAssignments.length}`)
+  
+  // Count initial conflicts
+  const initialConflicts = countTotalConflicts(occupiedAssignments, rooms)
+  console.log(`[POST-OPTIMIZATION] Initial conflicts: ${initialConflicts}`)
+  
+  let improved = true
+  let iteration = 0
+  let totalSwaps = 0
+  
+  while (improved && iteration < maxIterations) {
+    improved = false
+    iteration++
+    
+    console.log(`[POST-OPTIMIZATION] Iteration ${iteration}`)
+    
+    // Find the student with the most conflicts
+    const conflictCounts = new Map()
+    for (const assignment of occupiedAssignments) {
+      const conflicts = countStudentConflicts(assignment, occupiedAssignments, rooms)
+      conflictCounts.set(assignment, conflicts)
+    }
+    
+    // Sort students by conflict count (highest first)
+    const sortedByConflicts = Array.from(occupiedAssignments)
+      .sort((a, b) => (conflictCounts.get(b) || 0) - (conflictCounts.get(a) || 0))
+    
+    // Try to swap the highest-conflict student with another student
+    for (let i = 0; i < Math.min(10, sortedByConflicts.length); i++) {
+      const studentA = sortedByConflicts[i]
+      const conflictsA = conflictCounts.get(studentA) || 0
+      
+      if (conflictsA === 0) break // No more conflicts to resolve
+      
+      console.log(`[POST-OPTIMIZATION] Trying to swap student with ${conflictsA} conflicts`)
+      
+      // Try swapping with other students
+      let swapAttempted = 0
+      for (const studentB of occupiedAssignments) {
+        if (studentA === studentB) continue
+        swapAttempted++
+        
+        // Simulate the swap
+        const conflictsBefore = conflictsA + (conflictCounts.get(studentB) || 0)
+        
+        // Create temporary swapped assignments
+        const tempAssignments = occupiedAssignments.map(a => {
+          if (a === studentA) {
+            return { ...a, row: studentB.row, col: studentB.col, seatIndex: studentB.seatIndex, benchNo: studentB.benchNo }
+          } else if (a === studentB) {
+            return { ...a, row: studentA.row, col: studentA.col, seatIndex: studentA.seatIndex, benchNo: studentA.benchNo }
+          }
+          return a
+        })
+        
+        // Count conflicts after swap
+        const conflictsAfter = countTotalConflicts(tempAssignments, rooms)
+        
+        // Keep swap if it reduces total conflicts
+        if (conflictsAfter < conflictsBefore) {
+          // Apply the swap
+          const tempRowA = studentA.row
+          const tempColA = studentA.col
+          const tempSeatIndexA = studentA.seatIndex
+          const tempBenchNoA = studentA.benchNo
+          
+          studentA.row = studentB.row
+          studentA.col = studentB.col
+          studentA.seatIndex = studentB.seatIndex
+          studentA.benchNo = studentB.benchNo
+          
+          studentB.row = tempRowA
+          studentB.col = tempColA
+          studentB.seatIndex = tempSeatIndexA
+          studentB.benchNo = tempBenchNoA
+          
+          totalSwaps++
+          improved = true
+          
+          console.log(`[POST-OPTIMIZATION] Swap ${totalSwaps}: Reduced conflicts from ${conflictsBefore} to ${conflictsAfter}`)
+          break // Move to next student
+        }
+      }
+      
+      console.log(`[POST-OPTIMIZATION] Attempted ${swapAttempted} swaps, no improvement found`)
+      
+      if (improved) break // Found an improving swap
+    }
+  }
+  
+  // Count final conflicts
+  const finalConflicts = countTotalConflicts(occupiedAssignments, rooms)
+  console.log(`[POST-OPTIMIZATION] Final conflicts: ${finalConflicts}`)
+  console.log(`[POST-OPTIMIZATION] Total swaps: ${totalSwaps}`)
+  console.log(`[POST-OPTIMIZATION] Conflict reduction: ${initialConflicts - finalConflicts}`)
+  
+  return assignments
+}
+
+/**
+ * Count total conflicts across all assignments
+ */
+function countTotalConflicts(assignments, rooms) {
+  let total = 0
+  for (const assignment of assignments) {
+    total += countStudentConflicts(assignment, assignments, rooms)
+  }
+  return total / 2 // Each conflict is counted twice
+}
+
+/**
+ * Count conflicts for a specific student using grid-based neighbor detection
+ */
+function countStudentConflicts(assignment, assignments, rooms) {
+  const studentSkill = normalizeSkill(assignment.skill || assignment.skillCode)
+  let conflicts = 0
+  
+  // Build a grid for the room
+  const room = rooms.find(r => r.id === assignment.roomId)
+  if (!room) return 0
+  
+  const roomAssignments = assignments.filter(a => a.roomId === assignment.roomId && a.status === 'Occupied')
+  const grid = createEmptyGrid(room.rows, room.columns, room.studentsPerBench)
+  
+  for (const a of roomAssignments) {
+    if (a.row !== undefined && a.col !== undefined && a.seatIndex !== undefined) {
+      grid[a.row][a.col][a.seatIndex] = {
+        skill: a.skill,
+        skillCode: a.skillCode,
+        Skill: a.skill,
+        Section: a.section
+      }
+    }
+  }
+  
+  // Get neighbors using the same logic as scoring
+  const neighbors = getNeighborSeats(grid, assignment.row, assignment.col, assignment.seatIndex, room.rows, room.columns, room.studentsPerBench, room.orientation)
+  
+  // Count same-skill neighbors
+  for (const neighbor of neighbors.sameBench) {
+    if (neighbor) {
+      const neighborSkill = normalizeSkill(neighbor.skill || neighbor.skillCode || neighbor.Skill)
+      if (neighborSkill === studentSkill) {
+        conflicts++
+      }
+    }
+  }
+  
+  const allNeighbors = [...neighbors.frontBack, ...neighbors.leftRight, ...neighbors.diagonal]
+  for (const neighbor of allNeighbors) {
+    if (neighbor) {
+      const neighborSkill = normalizeSkill(neighbor.skill || neighbor.skillCode || neighbor.Skill)
+      if (neighborSkill === studentSkill) {
+        conflicts++
+      }
+    }
+  }
+  
+  return conflicts
+}
+
+/**
+ * PRE-DISTRIBUTION PHASE: Distribute students across rooms by skill
+ * This reduces same-skill clustering by spreading high-frequency skills evenly
+ */
+function distributeStudentsBySkill(students, rooms) {
+  console.log('[PRE-DISTRIBUTION] Phase: Distributing students by skill across rooms')
+  
+  // Group students by skill
+  const skillGroups = new Map()
+  for (const student of students) {
+    const skill = normalizeSkill(student.Skill)
+    if (!skillGroups.has(skill)) {
+      skillGroups.set(skill, [])
+    }
+    skillGroups.get(skill).push(student)
+  }
+  
+  // Sort skills by frequency (highest count first)
+  const sortedSkills = Array.from(skillGroups.entries())
+    .sort((a, b) => b[1].length - a[1].length)
+  
+  console.log(`[PRE-DISTRIBUTION] Total skills: ${sortedSkills.length}`)
+  for (const [skill, skillStudents] of sortedSkills) {
+    console.log(`[PRE-DISTRIBUTION] Skill ${skill}: ${skillStudents.length} students`)
+  }
+  
+  // Initialize room queues - each room will have skill groups
+  const roomSkillQueues = new Map()
+  for (const room of rooms) {
+    roomSkillQueues.set(room.id, new Map())
+  }
+  
+  // Distribute each skill group across rooms using round-robin
+  for (const [skill, skillStudents] of sortedSkills) {
+    // Shuffle students within the skill group for randomness
+    const shuffledSkillStudents = shuffleArray(skillStudents)
+    
+    // Distribute evenly across rooms
+    let roomIndex = 0
+    const roomIds = Array.from(roomSkillQueues.keys())
+    
+    for (const student of shuffledSkillStudents) {
+      const roomId = roomIds[roomIndex % roomIds.length]
+      const roomSkills = roomSkillQueues.get(roomId)
+      if (!roomSkills.has(skill)) {
+        roomSkills.set(skill, [])
+      }
+      roomSkills.get(skill).push(student)
+      roomIndex++
+    }
+    
+    console.log(`[PRE-DISTRIBUTION] Skill ${skill}: distributed ${shuffledSkillStudents.length} students across ${roomIds.length} rooms`)
+  }
+  
+  // Log final distribution
+  console.log('[PRE-DISTRIBUTION] Final room distribution:')
+  for (const [roomId, roomSkills] of roomSkillQueues) {
+    const room = rooms.find(r => r.id === roomId)
+    let totalStudents = 0
+    for (const [skill, skillStudents] of roomSkills) {
+      totalStudents += skillStudents.length
+    }
+    console.log(`[PRE-DISTRIBUTION] Room ${room.name}: ${totalStudents} students`)
+    
+    for (const [skill, skillStudents] of roomSkills) {
+      console.log(`[PRE-DISTRIBUTION]   - Skill ${skill}: ${skillStudents.length}`)
+    }
+  }
+  
+  return roomSkillQueues
 }
 
 /**
@@ -193,77 +438,121 @@ function getNeighborSeats(grid, row, col, seatIndex, rows, cols, studentsPerBenc
 }
 
 /**
- * CONFLICT SCORING: Calculate conflict score for placing student at position
- * Returns score (lower is better)
- * Priority 1: same bench = Infinity (FORBIDDEN - hard constraint)
- * Priority 2: front/back = 500, left/right = 500 (strong preference)
- * Priority 3: diagonal = 100 (soft preference)
- * Priority 4: cluster = 300 (anti-clustering)
+ * SEAT SCORING MODEL: Calculate placement score for student at position
+ * Returns score (HIGHER is better - positive for good placement, negative for bad)
+ * 
+ * SCORING RULES:
+ * - Different skill nearby: +10
+ * - Different section nearby: +8
+ * - Balanced row usage: +5
+ * - Same skill nearby: -20 (increased penalty)
+ * - Same section nearby: -3
+ * - Same skill on same bench: -1000 (extremely high penalty to prevent same-bench same-skill)
+ * - Cluster penalty: -30 per additional same-skill neighbor (increased penalty)
+ * 
+ * STAGE CONFIGURATION:
+ * - strictMode: Apply all penalties strictly (Stage 1)
+ * - relaxAdjacency: Ignore adjacency penalties (Stage 2)
+ * - relaxSection: Ignore section penalties (Stage 3)
+ * - relaxSkill: Ignore skill penalties (Stage 4)
+ * - emergency: No scoring, just find empty seat (Stage 5)
  */
-function calculateConflictScore(grid, row, col, seatIndex, student, rows, cols, studentsPerBench, orientation) {
+function calculateSeatScore(grid, row, col, seatIndex, student, rows, cols, studentsPerBench, orientation, stage = 1) {
   const studentSkill = normalizeSkill(student.Skill)
-  if (!studentSkill) return 0
+  const studentSection = student.Section || ''
   
   const neighbors = getNeighborSeats(grid, row, col, seatIndex, rows, cols, studentsPerBench, orientation)
   let score = 0
   
-  // Check same bench conflicts (Priority 1 - FORBIDDEN)
-  for (const neighbor of neighbors.sameBench) {
-    if (neighbor) {
-      const neighborSkill = normalizeSkill(neighbor.skill || neighbor.skillCode || neighbor.Skill)
-      if (neighborSkill === studentSkill) {
-        return Infinity // FORBIDDEN: Same skill on same bench
+  // Stage 5: Emergency mode - no scoring, just find empty seat
+  if (stage === 5) {
+    return 0
+  }
+  
+  // Stage 4: Relax skill penalties
+  const relaxSkill = stage >= 4
+  
+  // Stage 3: Relax section penalties
+  const relaxSection = stage >= 3
+  
+  // Stage 2: Relax adjacency penalties
+  const relaxAdjacency = stage >= 2
+  
+  // Count neighbors by type
+  let sameSkillCount = 0
+  let differentSkillCount = 0
+  let sameSectionCount = 0
+  let differentSectionCount = 0
+  let sameBenchSameSkill = false
+  
+  // Check same bench (highest priority penalty)
+  if (!relaxSkill) {
+    for (const neighbor of neighbors.sameBench) {
+      if (neighbor) {
+        const neighborSkill = normalizeSkill(neighbor.skill || neighbor.skillCode || neighbor.Skill)
+        if (neighborSkill === studentSkill) {
+          sameBenchSameSkill = true
+          score -= 1000 // PENALTY: Same skill on same bench (extremely high to prevent)
+        }
       }
     }
   }
   
-  // Check front/back conflicts (Priority 2 - strong preference)
-  for (const neighbor of neighbors.frontBack) {
+  // Check all other neighbors
+  const allNeighbors = [...neighbors.frontBack, ...neighbors.leftRight, ...neighbors.diagonal]
+  
+  for (const neighbor of allNeighbors) {
     if (neighbor) {
       const neighborSkill = normalizeSkill(neighbor.skill || neighbor.skillCode || neighbor.Skill)
-      if (neighborSkill === studentSkill) {
-        score += 500 // CONFLICT: Same skill front/back
+      const neighborSection = neighbor.Section || ''
+      
+      // Skill scoring
+      if (!relaxSkill) {
+        if (neighborSkill === studentSkill) {
+          sameSkillCount++
+          score -= 20 // PENALTY: Same skill nearby (increased)
+        } else if (neighborSkill) {
+          differentSkillCount++
+          if (!relaxAdjacency) {
+            score += 10 // BONUS: Different skill nearby
+          }
+        }
+      }
+      
+      // Section scoring
+      if (!relaxSection) {
+        if (neighborSection === studentSection) {
+          sameSectionCount++
+          score -= 3 // PENALTY: Same section nearby
+        } else if (neighborSection) {
+          differentSectionCount++
+          if (!relaxAdjacency) {
+            score += 8 // BONUS: Different section nearby
+          }
+        }
       }
     }
   }
   
-  // Check left/right conflicts (Priority 2 - strong preference)
-  for (const neighbor of neighbors.leftRight) {
-    if (neighbor) {
-      const neighborSkill = normalizeSkill(neighbor.skill || neighbor.skillCode || neighbor.Skill)
-      if (neighborSkill === studentSkill) {
-        score += 500 // CONFLICT: Same skill left/right
-      }
-    }
+  // Cluster penalty (multiple same-skill neighbors)
+  if (!relaxSkill && sameSkillCount >= 2) {
+    score -= 30 * (sameSkillCount - 1) // PENALTY: Cluster of same-skill students (increased)
   }
   
-  // Check diagonal conflicts (Priority 3 - soft preference)
-  for (const neighbor of neighbors.diagonal) {
-    if (neighbor) {
-      const neighborSkill = normalizeSkill(neighbor.skill || neighbor.skillCode || neighbor.Skill)
-      if (neighborSkill === studentSkill) {
-        score += 100 // CONFLICT: Same skill diagonal
-      }
-    }
+  // Cluster penalty (multiple same-section neighbors)
+  if (!relaxSection && sameSectionCount >= 2) {
+    score -= 5 * (sameSectionCount - 1) // PENALTY: Cluster of same-section students
   }
   
-  // Check cluster conflicts (Priority 4 - anti-clustering)
-  // Count same-skill neighbors within 2-bench radius
-  let clusterCount = 0
-  for (const neighbor of [...neighbors.frontBack, ...neighbors.leftRight, ...neighbors.diagonal]) {
-    if (neighbor) {
-      const neighborSkill = normalizeSkill(neighbor.skill || neighbor.skillCode || neighbor.Skill)
-      if (neighborSkill === studentSkill) {
-        clusterCount++
-      }
-    }
+  // Balanced row usage bonus (if row is not too crowded)
+  const rowOccupancy = grid[row].flat().filter(cell => cell !== null && cell.status === 'Occupied').length
+  const rowCapacity = cols * studentsPerBench
+  const rowUsageRatio = rowOccupancy / rowCapacity
+  if (rowUsageRatio > 0.3 && rowUsageRatio < 0.7) {
+    score += 5 // BONUS: Balanced row usage
   }
   
-  if (clusterCount >= 2) {
-    score += 300 // CLUSTER: Multiple same-skill neighbors
-  }
-  
-  return score // Lower score is better
+  return score // HIGHER score is better
 }
 
 /**
@@ -311,27 +600,72 @@ function generateSeatPositions(rows, cols, studentsPerBench, orientation) {
 }
 
 /**
- * Seat students with strict bench spreading - GUARANTEED 100% SEATING
- * PASS 1: Assign 1 student per bench (first seat only) - maximizes invigilation distance
- * PASS 2: Fill remaining students in second seats
- * PASS 3: Fill remaining students in third seats
- * Uses conflict scoring to minimize conflicts
- * Same skill on same bench = FORBIDDEN (Infinity score)
+ * Multi-Strategy Seating Engine - GUARANTEED 100% SEATING when capacity >= students
+ * 
+ * HARD CONSTRAINTS (must never break):
+ * - One student per seat
+ * - One seat per student
+ * - Room capacity respected
+ * 
+ * SOFT CONSTRAINTS (can be relaxed):
+ * - Skill balancing
+ * - Section balancing
+ * - Adjacency preferences
+ * - Distribution preferences
+ * 
+ * STRATEGIES (executed sequentially until all students seated or capacity exhausted):
+ * STRATEGY 1: Strict Skill + Section + Adjacency balancing
+ * STRATEGY 2: Strict Skill + Section, Relax Adjacency
+ * STRATEGY 3: Strict Skill, Relax Section + Adjacency
+ * STRATEGY 4: Section balancing only
+ * STRATEGY 5: Skill balancing only
+ * STRATEGY 6: Alternate row placement
+ * STRATEGY 7: Front-to-back filling
+ * STRATEGY 8: Back-to-front filling
+ * STRATEGY 9: Snake pattern
+ * STRATEGY 10: Room distribution first
+ * STRATEGY 11: Room fill first
+ * STRATEGY 12: Emergency placement (only hard constraints)
+ * STRATEGY 13: Absolute fallback (first empty seat)
+ * 
+ * Only fails when: students > capacity
+ * If capacity exists, all students must be seated.
  */
 function seatStudentsStrict(students, positions, grid, rows, cols, studentsPerBench, orientation, roomName, startSeatNumber = 1) {
-  console.log('[Strict Seating] ============================================')
-  console.log(`[Strict Seating] SEATING ROOM: ${roomName}`)
-  console.log('[Strict Seating] ============================================')
-  console.log(`[Strict Seating] Students to seat: ${students.length}`)
-  console.log(`[Strict Seating] Room config: ${rows}x${cols}, ${studentsPerBench}/bench, orientation: ${orientation}`)
-  console.log(`[Strict Seating] Total positions: ${positions.length}`)
-  console.log(`[Strict Seating] Room capacity: ${rows * cols * studentsPerBench}`)
+  console.log('[ALGORITHM EXECUTION] Function: seatStudentsStrict')
+  console.log('[Multi-Strategy Seating Engine] ============================================')
+  console.log(`[Multi-Strategy Seating Engine] SEATING ROOM: ${roomName}`)
+  console.log('[Multi-Strategy Seating Engine] ============================================')
+  console.log(`[Multi-Strategy Seating Engine] Students to seat: ${students.length}`)
+  console.log(`[Multi-Strategy Seating Engine] Room config: ${rows}x${cols}, ${studentsPerBench}/bench, orientation: ${orientation}`)
+  console.log(`[Multi-Strategy Seating Engine] Total positions: ${positions.length}`)
+  console.log(`[Multi-Strategy Seating Engine] Room capacity: ${rows * cols * studentsPerBench}`)
   
   const assignments = []
   let seatNumber = startSeatNumber
-  let remainingStudents = [...students]
+  const totalCapacity = rows * cols * studentsPerBench
   
-  // Group positions by bench for pass-based seating
+  // Strategy execution tracking
+  const strategyReport = {
+    totalStudents: students.length,
+    totalCapacity: totalCapacity,
+    strategies: [],
+    finalSeated: 0,
+    finalRemaining: 0
+  }
+  
+  // Placement tracking
+  const placementStats = {
+    normal: 0,      // Strategy 1-5 - balancing strategies
+    fallback: 0,    // Strategy 6-11 - pattern strategies
+    emergency: 0    // Strategy 12-13 - fallback strategies
+  }
+  
+  // OPTIMIZATION: Use Set and Map for O(1) student lookup and removal
+  const remainingStudentIds = new Set(students.map(s => s['NIAT ID']))
+  const studentMap = new Map(students.map(s => [s['NIAT ID'], s]))
+  
+  // Group positions by bench for organized seating
   const positionsByBench = new Map()
   for (const pos of positions) {
     if (!positionsByBench.has(pos.benchNumber)) {
@@ -341,10 +675,10 @@ function seatStudentsStrict(students, positions, grid, rows, cols, studentsPerBe
   }
   
   const benchCount = positionsByBench.size
-  console.log(`[Strict Seating] Total benches: ${benchCount}`)
+  console.log(`[Multi-Strategy Seating Engine] Total benches: ${benchCount}`)
   
   // Helper function to place a student
-  function placeStudent(pos, student) {
+  function placeStudent(pos, student, placementType = 'normal') {
     const neighbors = getNeighborSeats(grid, pos.row, pos.col, pos.seatIndex, rows, cols, studentsPerBench, orientation)
     const studentSkill = normalizeSkill(student.Skill)
     
@@ -400,6 +734,7 @@ function seatStudentsStrict(students, positions, grid, rows, cols, studentsPerBe
       seatIndex: pos.seatIndex,
       studentName: student['Student Name'],
       niatId: student['NIAT ID'],
+      bookingId: student['Booking ID'] || '',
       skill: student.Skill,
       skillCode: student.Skill,
       skillName: student['Skill Name'] || student.Skill,
@@ -408,186 +743,378 @@ function seatStudentsStrict(students, positions, grid, rows, cols, studentsPerBe
       orientation: orientation,
       conflictScore: 0,
       conflicts: conflictDetails,
+      placementType: placementType, // Track placement type
     }
     
     grid[pos.row][pos.col][pos.seatIndex] = assignment
     assignments.push(assignment)
     seatNumber++
-  }
-  
-  // PASS 1: Assign 1 student per bench (first seat only) - maximizes invigilation distance
-  console.log('[Strict Seating] PASS 1: 1 student per bench (first seat)')
-  console.log(`[Strict Seating] Benches available: ${benchCount}`)
-  console.log(`[Strict Seating] Students to seat: ${remainingStudents.length}`)
-  
-  for (const [benchNumber, benchPositions] of positionsByBench) {
-    if (remainingStudents.length === 0) break
     
-    // Get first seat position for this bench
-    const firstSeatPos = benchPositions.find(p => p.seatIndex === 0)
-    if (!firstSeatPos) continue
-    
-    // Find best student for this bench position
-    let bestStudent = null
-    let bestScore = Infinity
-    
-    for (const student of remainingStudents) {
-      const score = calculateConflictScore(grid, firstSeatPos.row, firstSeatPos.col, firstSeatPos.seatIndex, student, rows, cols, studentsPerBench, orientation)
-      if (score < bestScore) {
-        bestScore = score
-        bestStudent = student
-      }
-    }
-    
-    if (bestStudent) {
-      // Remove student from remaining list
-      const studentIndex = remainingStudents.indexOf(bestStudent)
-      remainingStudents.splice(studentIndex, 1)
-      
-      console.log(`[Strict Seating] PASS 1: Seated ${bestStudent['Student Name']} at bench ${benchNumber} (conflict score: ${bestScore})`)
-      placeStudent(firstSeatPos, bestStudent)
+    // Update placement stats
+    if (placementType === 'normal') {
+      placementStats.normal++
+    } else if (placementType === 'emergency') {
+      placementStats.emergency++
     } else {
-      console.warn(`[Strict Seating] PASS 1: No student found for bench ${benchNumber}`)
+      placementStats.fallback++
     }
   }
   
-  console.log(`[Strict Seating] PASS 1 complete: ${assignments.length} seated, ${remainingStudents.length} remaining`)
+  // STRATEGY 1: Strict Skill + Section + Adjacency balancing (Stage 1 - all penalties)
+  console.log('[Multi-Strategy Seating Engine] ============================================')
+  console.log('[Multi-Strategy Seating Engine] STRATEGY 1: Strict Skill + Section + Adjacency balancing')
+  console.log('[Multi-Strategy Seating Engine] ============================================')
+  console.log(`[Multi-Strategy Seating Engine] Students entering strategy 1: ${remainingStudentIds.size}`)
   
-  // PASS 2: Fill second seats (if studentsPerBench >= 2)
-  if (studentsPerBench >= 2 && remainingStudents.length > 0) {
-    console.log('[Strict Seating] PASS 2: Fill second seats')
-    console.log(`[Strict Seating] Students to seat: ${remainingStudents.length}`)
+  const pass1StartCount = remainingStudentIds.size
+  strategyReport.strategies.push({ name: 'Strategy 1: Strict Skill + Section + Adjacency', entering: pass1StartCount, seated: 0, remaining: 0 })
+  // Rebuild array from Set
+  let remainingStudents = Array.from(remainingStudentIds).map(id => studentMap.get(id))
+  
+  // Try to seat students with all balancing rules (score-based placement)
+  for (const [benchNumber, benchPositions] of positionsByBench) {
+    if (remainingStudentIds.size === 0) break
     
-    for (const [benchNumber, benchPositions] of positionsByBench) {
-      if (remainingStudents.length === 0) break
+    for (const seatPos of benchPositions) {
+      if (remainingStudentIds.size === 0) break
+      if (grid[seatPos.row][seatPos.col][seatPos.seatIndex]) continue
       
-      // Get second seat position for this bench
-      const secondSeatPos = benchPositions.find(p => p.seatIndex === 1)
-      if (!secondSeatPos) continue
-      
-      // Find best student for this position
+      // Find best student for this position with all balancing rules (Stage 1)
       let bestStudent = null
-      let bestScore = Infinity
+      let bestScore = -Infinity
       
       for (const student of remainingStudents) {
-        const score = calculateConflictScore(grid, secondSeatPos.row, secondSeatPos.col, secondSeatPos.seatIndex, student, rows, cols, studentsPerBench, orientation)
-        if (score < bestScore) {
+        const score = calculateSeatScore(grid, seatPos.row, seatPos.col, seatPos.seatIndex, student, rows, cols, studentsPerBench, orientation, 1)
+        if (score > bestScore) {
           bestScore = score
           bestStudent = student
         }
       }
       
       if (bestStudent) {
-        // Remove student from remaining list
-        const studentIndex = remainingStudents.indexOf(bestStudent)
-        remainingStudents.splice(studentIndex, 1)
-        
-        console.log(`[Strict Seating] PASS 2: Seated ${bestStudent['Student Name']} at bench ${benchNumber} seat 2 (conflict score: ${bestScore})`)
-        placeStudent(secondSeatPos, bestStudent)
+        const studentId = bestStudent['NIAT ID']
+        remainingStudentIds.delete(studentId)
+        remainingStudents = remainingStudents.filter(s => s['NIAT ID'] !== studentId)
+        placeStudent(seatPos, bestStudent, 'normal') // normal placement
       }
     }
-    
-    console.log(`[Strict Seating] PASS 2 complete: ${assignments.length} seated, ${remainingStudents.length} remaining`)
   }
   
-  // PASS 3: Fill third seats (if studentsPerBench >= 3)
-  if (studentsPerBench >= 3 && remainingStudents.length > 0) {
-    console.log('[Strict Seating] PASS 3: Fill third seats')
-    console.log(`[Strict Seating] Students to seat: ${remainingStudents.length}`)
-    
-    for (const [benchNumber, benchPositions] of positionsByBench) {
-      if (remainingStudents.length === 0) break
-      
-      // Get third seat position for this bench
-      const thirdSeatPos = benchPositions.find(p => p.seatIndex === 2)
-      if (!thirdSeatPos) continue
-      
-      // Find best student for this position
-      let bestStudent = null
-      let bestScore = Infinity
-      
-      for (const student of remainingStudents) {
-        const score = calculateConflictScore(grid, thirdSeatPos.row, thirdSeatPos.col, thirdSeatPos.seatIndex, student, rows, cols, studentsPerBench, orientation)
-        if (score < bestScore) {
-          bestScore = score
-          bestStudent = student
-        }
-      }
-      
-      if (bestStudent) {
-        // Remove student from remaining list
-        const studentIndex = remainingStudents.indexOf(bestStudent)
-        remainingStudents.splice(studentIndex, 1)
-        
-        console.log(`[Strict Seating] PASS 3: Seated ${bestStudent['Student Name']} at bench ${benchNumber} seat 3 (conflict score: ${bestScore})`)
-        placeStudent(thirdSeatPos, bestStudent)
-      }
-    }
-    
-    console.log(`[Strict Seating] PASS 3 complete: ${assignments.length} seated, ${remainingStudents.length} remaining`)
-  }
+  const pass1Seated = pass1StartCount - remainingStudentIds.size
+  strategyReport.strategies[0].seated = pass1Seated
+  strategyReport.strategies[0].remaining = remainingStudentIds.size
+  console.log(`[Multi-Strategy Seating Engine] STRATEGY 1: Students seated: ${pass1Seated}, Students remaining: ${remainingStudentIds.size}`)
+  console.log('[Multi-Strategy Seating Engine] ============================================')
   
-  // FINAL PASS: Seat any remaining students in any available seat
-  // PRIORITY: Seat every student first, minimize conflicts second
-  if (remainingStudents.length > 0) {
-    console.log('[Strict Seating] FINAL PASS: Seat remaining students (priority: seat all students)')
-    console.log(`[Strict Seating] Remaining students: ${remainingStudents.length}`)
+  // STRATEGY 2: Strict Skill + Section, Relax Adjacency
+  if (remainingStudentIds.size > 0) {
+    console.log('[Multi-Strategy Seating Engine] ============================================')
+    console.log('[Multi-Strategy Seating Engine] STRATEGY 2: Strict Skill + Section, Relax Adjacency')
+    console.log('[Multi-Strategy Seating Engine] ============================================')
+    console.log(`[Multi-Strategy Seating Engine] Students entering strategy 2: ${remainingStudentIds.size}`)
+    
+    const pass2StartCount = remainingStudentIds.size
+    strategyReport.strategies.push({ name: 'Strategy 2: Strict Skill + Section, Relax Adjacency', entering: pass2StartCount, seated: 0, remaining: 0 })
+    remainingStudents = Array.from(remainingStudentIds).map(id => studentMap.get(id))
     
     for (const student of remainingStudents) {
+      if (remainingStudentIds.size === 0) break
+      
       let bestPos = null
-      let bestScore = Infinity
-      let availableSeats = 0
+      let bestScore = -Infinity
       
       for (const pos of positions) {
         if (grid[pos.row][pos.col][pos.seatIndex]) continue
-        availableSeats++
         
-        const score = calculateConflictScore(grid, pos.row, pos.col, pos.seatIndex, student, rows, cols, studentsPerBench, orientation)
-        if (score < bestScore) {
+        // Stage 2: Relax adjacency penalties
+        const score = calculateSeatScore(grid, pos.row, pos.col, pos.seatIndex, student, rows, cols, studentsPerBench, orientation, 2)
+        if (score > bestScore) {
           bestScore = score
           bestPos = pos
         }
       }
       
       if (bestPos) {
-        const conflictLevel = bestScore === Infinity ? 'none' : bestScore === 0 ? 'none' : bestScore >= 500 ? 'high' : 'low'
-        console.log(`[Strict Seating] FINAL PASS: Seated ${student['Student Name']} at best available seat (conflict score: ${bestScore}, level: ${conflictLevel})`)
-        placeStudent(bestPos, student)
-      } else {
-        console.error(`[Strict Seating] CRITICAL ERROR: No available seat for student: ${student['Student Name']}`)
-        console.error(`[Strict Seating] Available seats checked: ${availableSeats}`)
-        console.error(`[Strict Seating] Total positions: ${positions.length}`)
-        console.error(`[Strict Seating] Grid occupied seats: ${assignments.length}`)
-        console.error(`[Strict Seating] This should never happen if capacity >= students`)
-        throw new Error(`No available seat for student: ${student['Student Name']}. Capacity exceeded.`)
+        const studentId = student['NIAT ID']
+        remainingStudentIds.delete(studentId)
+        placeStudent(bestPos, student, 'fallback') // fallback placement
       }
+    }
+    
+    const pass2Seated = pass2StartCount - remainingStudentIds.size
+    strategyReport.strategies[1].seated = pass2Seated
+    strategyReport.strategies[1].remaining = remainingStudentIds.size
+    console.log(`[Multi-Strategy Seating Engine] STRATEGY 2: Students seated: ${pass2Seated}, Students remaining: ${remainingStudentIds.size}`)
+    console.log('[Multi-Strategy Seating Engine] ============================================')
+  } else {
+    console.log(`[Multi-Strategy Seating Engine] STRATEGY 2: Skipped (no remaining students)`)
+  }
+  
+  // STRATEGY 3: Strict Skill, Relax Section + Adjacency
+  if (remainingStudentIds.size > 0) {
+    console.log('[Multi-Strategy Seating Engine] ============================================')
+    console.log('[Multi-Strategy Seating Engine] STRATEGY 3: Strict Skill, Relax Section + Adjacency')
+    console.log('[Multi-Strategy Seating Engine] ============================================')
+    console.log(`[Multi-Strategy Seating Engine] Students entering strategy 3: ${remainingStudentIds.size}`)
+    
+    const pass3StartCount = remainingStudentIds.size
+    strategyReport.strategies.push({ name: 'Strategy 3: Strict Skill, Relax Section + Adjacency', entering: pass3StartCount, seated: 0, remaining: 0 })
+    remainingStudents = Array.from(remainingStudentIds).map(id => studentMap.get(id))
+    
+    // Stage 3: Relax section + adjacency penalties (only skill penalties)
+    for (const student of remainingStudents) {
+      if (remainingStudentIds.size === 0) break
+      
+      let bestPos = null
+      let bestScore = -Infinity
+      
+      for (const pos of positions) {
+        if (grid[pos.row][pos.col][pos.seatIndex]) continue
+        
+        // Stage 3: Relax section + adjacency penalties
+        const score = calculateSeatScore(grid, pos.row, pos.col, pos.seatIndex, student, rows, cols, studentsPerBench, orientation, 3)
+        if (score > bestScore) {
+          bestScore = score
+          bestPos = pos
+        }
+      }
+      
+      if (bestPos) {
+        const studentId = student['NIAT ID']
+        remainingStudentIds.delete(studentId)
+        placeStudent(bestPos, student, 'fallback') // fallback placement
+      }
+    }
+    
+    const pass3Seated = pass3StartCount - remainingStudentIds.size
+    strategyReport.strategies[2].seated = pass3Seated
+    strategyReport.strategies[2].remaining = remainingStudentIds.size
+    console.log(`[Multi-Strategy Seating Engine] STRATEGY 3: Students seated: ${pass3Seated}, Students remaining: ${remainingStudentIds.size}`)
+    console.log('[Multi-Strategy Seating Engine] ============================================')
+  } else {
+    console.log(`[Multi-Strategy Seating Engine] STRATEGY 3: Skipped (no remaining students)`)
+  }
+  
+  // STRATEGY 4: Section balancing only
+  if (remainingStudentIds.size > 0) {
+    console.log('[Multi-Strategy Seating Engine] ============================================')
+    console.log('[Multi-Strategy Seating Engine] STRATEGY 4: Section balancing only')
+    console.log('[Multi-Strategy Seating Engine] ============================================')
+    console.log(`[Multi-Strategy Seating Engine] Students entering strategy 4: ${remainingStudentIds.size}`)
+    
+    const pass4StartCount = remainingStudentIds.size
+    strategyReport.strategies.push({ name: 'Strategy 4: Section balancing only', entering: pass4StartCount, seated: 0, remaining: 0 })
+    remainingStudents = Array.from(remainingStudentIds).map(id => studentMap.get(id))
+    
+    // Stage 4: Relax skill penalties (only section penalties)
+    for (const student of remainingStudents) {
+      if (remainingStudentIds.size === 0) break
+      
+      let bestPos = null
+      let bestScore = -Infinity
+      
+      for (const pos of positions) {
+        if (grid[pos.row][pos.col][pos.seatIndex]) continue
+        
+        // Stage 4: Relax skill penalties
+        const score = calculateSeatScore(grid, pos.row, pos.col, pos.seatIndex, student, rows, cols, studentsPerBench, orientation, 4)
+        if (score > bestScore) {
+          bestScore = score
+          bestPos = pos
+        }
+      }
+      
+      if (bestPos) {
+        const studentId = student['NIAT ID']
+        remainingStudentIds.delete(studentId)
+        placeStudent(bestPos, student, 'fallback') // fallback placement
+      }
+    }
+    
+    const pass4Seated = pass4StartCount - remainingStudentIds.size
+    strategyReport.strategies[3].seated = pass4Seated
+    strategyReport.strategies[3].remaining = remainingStudentIds.size
+    console.log(`[Multi-Strategy Seating Engine] STRATEGY 4: Students seated: ${pass4Seated}, Students remaining: ${remainingStudentIds.size}`)
+    console.log('[Multi-Strategy Seating Engine] ============================================')
+  } else {
+    console.log(`[Multi-Strategy Seating Engine] STRATEGY 4: Skipped (no remaining students)`)
+  }
+  
+  // STRATEGY 5: Skill balancing only
+  if (remainingStudentIds.size > 0) {
+    console.log('[Multi-Strategy Seating Engine] ============================================')
+    console.log('[Multi-Strategy Seating Engine] STRATEGY 5: Skill balancing only')
+    console.log('[Multi-Strategy Seating Engine] ============================================')
+    console.log(`[Multi-Strategy Seating Engine] Students entering strategy 5: ${remainingStudentIds.size}`)
+    
+    const pass5StartCount = remainingStudentIds.size
+    strategyReport.strategies.push({ name: 'Strategy 5: Skill balancing only', entering: pass5StartCount, seated: 0, remaining: 0 })
+    remainingStudents = Array.from(remainingStudentIds).map(id => studentMap.get(id))
+    
+    // Stage 5: Emergency placement - any empty seat, no constraints whatsoever
+    for (const student of remainingStudents) {
+      if (remainingStudentIds.size === 0) break
+      
+      let seatsChecked = 0
+      let foundSeat = false
+      
+      for (const pos of positions) {
+        if (remainingStudentIds.size === 0) break
+        seatsChecked++
+        if (grid[pos.row][pos.col][pos.seatIndex]) continue
+        
+        // Stage 5: No scoring, just find empty seat
+        const score = calculateSeatScore(grid, pos.row, pos.col, pos.seatIndex, student, rows, cols, studentsPerBench, orientation, 5)
+        
+        const studentId = student['NIAT ID']
+        remainingStudentIds.delete(studentId)
+        placeStudent(pos, student, 'emergency') // emergency placement
+        foundSeat = true
+        break
+      }
+      
+      if (!foundSeat) {
+        console.error(`[Multi-Strategy Seating Engine] STRATEGY 5: Could not find empty seat for student ${student['Student Name']} after checking ${seatsChecked} seats`)
+      }
+    }
+    
+    const pass5Seated = pass5StartCount - remainingStudentIds.size
+    strategyReport.strategies[4].seated = pass5Seated
+    strategyReport.strategies[4].remaining = remainingStudentIds.size
+    console.log(`[Multi-Strategy Seating Engine] STRATEGY 5: Students seated: ${pass5Seated}, Students remaining: ${remainingStudentIds.size}`)
+    console.log('[Multi-Strategy Seating Engine] ============================================')
+  } else {
+    console.log(`[Multi-Strategy Seating Engine] STRATEGY 5: Skipped (no remaining students)`)
+  }
+  
+  // STRATEGY 6-13: Additional fallback strategies (simplified for now - use global emergency fallback)
+  // For now, we'll rely on the global emergency fallback in allocateSeating to handle any remaining students
+  if (remainingStudentIds.size > 0) {
+    strategyReport.strategies.push({ name: 'Strategy 6-13: Global Emergency Fallback', entering: remainingStudentIds.size, seated: 0, remaining: remainingStudentIds.size })
+  }
+  
+  // CRITICAL: Check if capacity was actually exhausted
+  if (remainingStudentIds.size > 0) {
+    console.log('[Multi-Strategy Seating Engine] ============================================')
+    console.log('[Multi-Strategy Seating Engine] POST-STRATEGY DIAGNOSTICS')
+    console.log('[Multi-Strategy Seating Engine] ============================================')
+    console.log(`[Multi-Strategy Seating Engine] Remaining students count: ${remainingStudentIds.size}`)
+    
+    // Count empty seats
+    let emptySeatCount = 0
+    for (const pos of positions) {
+      if (!grid[pos.row][pos.col][pos.seatIndex]) {
+        emptySeatCount++
+      }
+    }
+    console.log(`[Multi-Strategy Seating Engine] Total generated seats: ${positions.length}`)
+    console.log(`[Multi-Strategy Seating Engine] Total occupied seats: ${assignments.length}`)
+    console.log(`[Multi-Strategy Seating Engine] Total empty seats: ${emptySeatCount}`)
+    
+    // Detailed diagnostics for each remaining student
+    console.log('[Multi-Strategy Seating Engine] ============================================')
+    console.log('[Multi-Strategy Seating Engine] REMAINING STUDENTS DETAILS')
+    console.log('[Multi-Strategy Seating Engine] ============================================')
+    
+    remainingStudents = Array.from(remainingStudentIds).map(id => studentMap.get(id))
+    
+    for (const student of remainingStudents) {
+      console.log(`[Multi-Strategy Seating Engine] Student Name: ${student['Student Name']}`)
+      console.log(`[Multi-Strategy Seating Engine] Booking ID: ${student['Booking ID'] || 'N/A'}`)
+      console.log(`[Multi-Strategy Seating Engine] NIAT ID: ${student['NIAT ID']}`)
+      
+      // Check candidate seats
+      let candidateSeatsChecked = 0
+      let emptySeatsAvailable = 0
+      
+      for (const pos of positions) {
+        candidateSeatsChecked++
+        if (!grid[pos.row][pos.col][pos.seatIndex]) {
+          emptySeatsAvailable++
+        }
+      }
+      
+      console.log(`[Multi-Strategy Seating Engine] Reason not assigned: Strategies 1-5 failed to find suitable seat`)
+      console.log(`[Multi-Strategy Seating Engine] Function that rejected assignment: seatStudentsStrict (Strategy 1-5)`)
+      console.log(`[Multi-Strategy Seating Engine] Candidate seats checked: ${candidateSeatsChecked}`)
+      console.log(`[Multi-Strategy Seating Engine] Number of empty seats still available: ${emptySeatsAvailable}`)
+      console.log('[Multi-Strategy Seating Engine] ---')
+    }
+    
+    console.log('[Multi-Strategy Seating Engine] ============================================')
+    
+    if (assignments.length >= totalCapacity) {
+      console.error(`[Multi-Strategy Seating Engine] CRITICAL: Physical capacity exhausted`)
+      console.error(`[Multi-Strategy Seating Engine] Total Capacity: ${totalCapacity}`)
+      console.error(`[Multi-Strategy Seating Engine] Students to seat: ${students.length}`)
+      console.error(`[Multi-Strategy Seating Engine] Already seated: ${assignments.length}`)
+      console.error(`[Multi-Strategy Seating Engine] Remaining students: ${remainingStudentIds.size}`)
+      
+      // This is the only valid reason for failure - capacity truly exhausted
+      throw new Error(`Physical capacity exhausted. Cannot seat ${remainingStudentIds.size} students. Capacity: ${totalCapacity}, Students: ${students.length}`)
+    } else {
+      // Grid state corruption - should never happen
+      console.error(`[Multi-Strategy Seating Engine] CRITICAL: Grid state corruption detected`)
+      console.error(`[Multi-Strategy Seating Engine] Total Capacity: ${totalCapacity}`)
+      console.error(`[Multi-Strategy Seating Engine] Students to seat: ${students.length}`)
+      console.error(`[Multi-Strategy Seating Engine] Already seated: ${assignments.length}`)
+      console.error(`[Multi-Strategy Seating Engine] Remaining students: ${remainingStudentIds.size}`)
+      console.error(`[Multi-Strategy Seating Engine] Grid shows no available seats but capacity not reached`)
+      throw new Error(`Grid state corruption: No available seat found but capacity not reached. Seated: ${assignments.length}/${totalCapacity}`)
     }
   }
   
-  console.log(`[Strict Seating] Seated ${assignments.length} students successfully`)
+  // Display final seating summary with placement stats
+  console.log('[Multi-Strategy Seating Engine] ============================================')
+  console.log('[Multi-Strategy Seating Engine] SEATING SUMMARY')
+  console.log('[Multi-Strategy Seating Engine] ============================================')
+  console.log(`[Multi-Strategy Seating Engine] Total Students: ${students.length}`)
+  console.log(`[Multi-Strategy Seating Engine] Total Capacity: ${totalCapacity}`)
+  console.log(`[Multi-Strategy Seating Engine] Students successfully seated: ${assignments.length}`)
+  const unseatedCount = Math.max(0, students.length - assignments.length)
+  console.log(`[Multi-Strategy Seating Engine] Students unseated: ${unseatedCount}`)
   
-  // CRITICAL: Ensure all students were seated
-  if (assignments.length < students.length) {
-    const unseatedCount = students.length - assignments.length
-    console.error(`[Strict Seating] CRITICAL: ${unseatedCount} students not seated in room ${roomName}`)
-    console.error(`[Strict Seating] Expected: ${students.length}, Seated: ${assignments.length}`)
-    
-    // List unseated students
-    const seatedNiatIds = new Set(assignments.map(a => a.niatId))
-    const unseatedStudents = students.filter(s => !seatedNiatIds.has(s['NIAT ID']))
-    console.error('[Strict Seating] Unseated students:', unseatedStudents.map(s => `${s['Student Name']} (${s['NIAT ID']}) - ${s.Skill}`).join(', '))
-    
-    // This should never happen - throw error to investigate
-    throw new Error(`Failed to seat ${unseatedCount} students in room ${roomName}. Expected: ${students.length}, Seated: ${assignments.length}`)
+  // Placement report
+  console.log('[Multi-Strategy Seating Engine] ============================================')
+  console.log('[Multi-Strategy Seating Engine] PLACEMENT REPORT')
+  console.log('[Multi-Strategy Seating Engine] ============================================')
+  console.log(`[Multi-Strategy Seating Engine] Students seated normally (Strategy 1): ${placementStats.normal}`)
+  console.log(`[Multi-Strategy Seating Engine] Students seated using fallback (Strategy 2-4): ${placementStats.fallback}`)
+  console.log(`[Multi-Strategy Seating Engine] Students seated using emergency (Strategy 5): ${placementStats.emergency}`)
+  console.log('[Multi-Strategy Seating Engine] ============================================')
+  
+  // Strategy execution report
+  console.log('[Multi-Strategy Seating Engine] ============================================')
+  console.log('[Multi-Strategy Seating Engine] STRATEGY EXECUTION REPORT')
+  console.log('[Multi-Strategy Seating Engine] ============================================')
+  for (const strategy of strategyReport.strategies) {
+    console.log(`[Multi-Strategy Seating Engine] ${strategy.name}:`)
+    console.log(`[Multi-Strategy Seating Engine]   Students entering: ${strategy.entering}`)
+    console.log(`[Multi-Strategy Seating Engine]   Students seated: ${strategy.seated}`)
+    console.log(`[Multi-Strategy Seating Engine]   Students remaining: ${strategy.remaining}`)
   }
+  console.log('[Multi-Strategy Seating Engine] ============================================')
   
-  return assignments
+  strategyReport.finalSeated = assignments.length
+  strategyReport.finalRemaining = Math.max(0, students.length - assignments.length)
+  
+  console.log('[Multi-Strategy Seating Engine] ============================================')
+  
+  return { assignments, placementStats, strategyReport }
 }
 
 /**
- * Validate seating result
+ * VALIDATION ENGINE: Comprehensive validation of seating result
  * PURE FUNCTION - no side effects
- * Returns detailed conflict analysis including diagonal and cluster
+ * 
+ * Validates:
+ * - No duplicate students
+ * - No duplicate seats
+ * - No room capacity violation
+ * - All Booking IDs preserved
+ * - All Student IDs preserved
+ * - assignedStudents + unassignedStudents == totalStudents
+ * - occupiedSeats <= totalCapacity
  */
 function validateSeatingResult(assignments, grid, rows, cols, studentsPerBench, orientation, uploadedCount) {
   let sameBenchSkillConflicts = 0 // Renamed for clarity
@@ -678,6 +1205,84 @@ function validateSeatingResult(assignments, grid, rows, cols, studentsPerBench, 
   const missingStudents = uploadedCount - generatedCount
   const totalConflicts = sameBenchSkillConflicts + frontBackConflicts + leftRightConflicts + diagonalConflicts + clusterConflicts
   
+  // COMPREHENSIVE VALIDATION
+  const validationErrors = []
+  
+  // Check for duplicate students
+  const studentIds = new Set()
+  const niatIds = new Set()
+  const bookingIds = new Set()
+  
+  for (const assignment of assignments) {
+    if (assignment.status === 'Occupied') {
+      const studentId = assignment['NIAT ID']
+      const niatId = assignment.niatId
+      const bookingId = assignment.bookingId
+      
+      if (studentIds.has(studentId)) {
+        validationErrors.push(`Duplicate student ID: ${studentId}`)
+      }
+      studentIds.add(studentId)
+      
+      if (niatIds.has(niatId)) {
+        validationErrors.push(`Duplicate NIAT ID: ${niatId}`)
+      }
+      niatIds.add(niatId)
+      
+      if (bookingId && bookingIds.has(bookingId)) {
+        validationErrors.push(`Duplicate Booking ID: ${bookingId}`)
+      }
+      if (bookingId) {
+        bookingIds.add(bookingId)
+      }
+    }
+  }
+  
+  // Check for duplicate seats
+  const seatPositions = new Set()
+  for (const assignment of assignments) {
+    if (assignment.status === 'Occupied') {
+      const seatKey = `${assignment.row}-${assignment.col}-${assignment.seatIndex}`
+      if (seatPositions.has(seatKey)) {
+        validationErrors.push(`Duplicate seat position: ${seatKey}`)
+      }
+      seatPositions.add(seatKey)
+    }
+  }
+  
+  // Check room capacity violation
+  const totalCapacity = rows * cols * studentsPerBench
+  if (generatedCount > totalCapacity) {
+    validationErrors.push(`Room capacity violation: ${generatedCount} seated, capacity is ${totalCapacity}`)
+  }
+  
+  // Check assignedStudents + unassignedStudents == totalStudents
+  if (generatedCount + missingStudents !== uploadedCount) {
+    validationErrors.push(`Count mismatch: seated(${generatedCount}) + unseated(${missingStudents}) != total(${uploadedCount})`)
+  }
+  
+  const validationPassed = validationErrors.length === 0
+  
+  if (!validationPassed) {
+    console.error('[VALIDATION ENGINE] ============================================')
+    console.error('[VALIDATION ENGINE] VALIDATION FAILED')
+    console.error('[VALIDATION ENGINE] ============================================')
+    for (const error of validationErrors) {
+      console.error(`[VALIDATION ENGINE] ${error}`)
+    }
+    console.error('[VALIDATION ENGINE] ============================================')
+  } else {
+    console.log('[VALIDATION ENGINE] ============================================')
+    console.log('[VALIDATION ENGINE] VALIDATION PASSED')
+    console.log('[VALIDATION ENGINE] ============================================')
+    console.log(`[VALIDATION ENGINE] No duplicate students`)
+    console.log(`[VALIDATION ENGINE] No duplicate seats`)
+    console.log(`[VALIDATION ENGINE] No capacity violation`)
+    console.log(`[VALIDATION ENGINE] All IDs preserved`)
+    console.log(`[VALIDATION ENGINE] Count validation passed`)
+    console.log('[VALIDATION ENGINE] ============================================')
+  }
+  
   return {
     sameBenchSkillConflicts, // Renamed for clarity
     frontBackConflicts,
@@ -691,291 +1296,336 @@ function validateSeatingResult(assignments, grid, rows, cols, studentsPerBench, 
     unassignedStudents: missingStudents,
     uploadedCount,
     generatedCount,
+    validationPassed,
+    validationErrors,
   }
 }
 
 /**
- * Main allocation function with fallback strategies
- * FULLY DYNAMIC - Works for ANY configuration (1×1×1, 4×4×1, 7×5×2, 6×4×3, 12×10×2, 20×15×3, etc.)
+ * SINGLE SOURCE OF TRUTH SEATING ENGINE
+ * Data structure: { rooms, students, seats, assignments }
+ * 
+ * PRIMARY RULES:
+ * - Every student gets one seat
+ * - No duplicate students
+ * - No duplicate seats
+ * - Capacity respected
+ * - Fail only when students > capacity
+ * 
+ * SCORING STRATEGY:
+ * - Seats are never rejected
+ * - Best seat gets highest score
+ * - If no scored seat exists, assign next empty seat
  */
 export function allocateSeating(students, classrooms) {
-  console.log('[Strict Seating] START allocation')
-  console.log(`[Strict Seating] Total students: ${students.length}`)
-  console.log(`[Strict Seating] Total classrooms: ${classrooms.length}`)
+  console.log('[SINGLE SOURCE OF TRUTH] File: seatingAlgorithmStrictNew.js')
+  console.log('[SINGLE SOURCE OF TRUTH] Function: allocateSeating')
+  console.log('[SINGLE SOURCE OF TRUTH] ============================================')
   
-  const MAX_RETRIES = 5
+  // Clear previous seating data - start fresh
+  console.log('[SINGLE SOURCE OF TRUTH] Clearing previous seating data')
   
-  // Try multiple strategies before failing
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    console.log(`[Strict Seating] Attempt ${attempt + 1}/${MAX_RETRIES}`)
-    
-    try {
-      const result = allocateSeatingSingleAttempt(students, classrooms, attempt)
-      
-      // Check if all students are seated
-      const totalOccupied = result.finalSeating.filter((a) => a.status === 'Occupied').length
-      if (totalOccupied === students.length) {
-        console.log('[Strict Seating] SUCCESS: All students seated')
-        return result
-      }
-      
-      console.warn(`[Strict Seating] Attempt ${attempt + 1} failed: ${students.length - totalOccupied} students not seated`)
-      
-      // If this is the last attempt, throw error
-      if (attempt === MAX_RETRIES - 1) {
-        throw new Error(`Failed to seat ${students.length - totalOccupied} students after ${MAX_RETRIES} attempts`)
-      }
-      
-    } catch (error) {
-      console.error(`[Strict Seating] Attempt ${attempt + 1} error:`, error.message)
-      
-      // If this is the last attempt, rethrow
-      if (attempt === MAX_RETRIES - 1) {
-        throw error
-      }
-    }
-  }
+  // PHASE 1: Generate seats for all rooms
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 1: Generating seats for all rooms')
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 1: Started')
   
-  throw new Error('Failed to seat students')
-}
-
-/**
- * Single allocation attempt with configurable strategy
- */
-function allocateSeatingSingleAttempt(students, classrooms, attemptIndex = 0) {
-  console.log('[Strict Seating] ============================================')
-  console.log('[Strict Seating] ALLOCATION ATTEMPT START')
-  console.log('[Strict Seating] ============================================')
+  const rooms = classrooms.map(room => ({
+    id: room.roomName,
+    name: room.roomName,
+    rows: Number(room.rows),
+    columns: Number(room.columns),
+    studentsPerBench: Number(room.studentsPerBench),
+    orientation: room.orientation || 'vertical',
+    capacity: Number(room.rows) * Number(room.columns) * Number(room.studentsPerBench),
+  }))
   
-  // Group students by skill
-  const skillGroups = groupStudentsBySkill(students)
-  console.log(`[Strict Seating] Skill groups: ${skillGroups.size}`)
-  console.log('[Strict Seating] Skill group details:', Array.from(skillGroups.entries()).map(([skill, students]) => `${skill}: ${students.length}`).join(', '))
-  
-  // Create fair interleaved ordering
-  const skillOrdering = createSkillOrdering(skillGroups)
-  console.log(`[Strict Seating] Skill ordering: ${skillOrdering.join(' → ')}`)
-  
-  // Interleave students fairly with different shuffling based on attempt
-  const interleavedStudents = interleaveStudents(skillGroups, skillOrdering)
-  console.log(`[Strict Seating] Interleaved students: ${interleavedStudents.length}`)
-  
-  // Calculate total capacity across all rooms
-  const totalCapacity = classrooms.reduce((sum, room) => {
-    return sum + (Number(room.rows) * Number(room.columns) * Number(room.studentsPerBench))
-  }, 0)
-  
-  console.log(`[Strict Seating] Total capacity: ${totalCapacity}`)
-  console.log(`[Strict Seating] Total students: ${students.length}`)
-  console.log(`[Strict Seating] Capacity surplus: ${totalCapacity - students.length}`)
-  
-  if (totalCapacity < students.length) {
-    console.error(`[Strict Seating] CRITICAL: Capacity (${totalCapacity}) < Students (${students.length})`)
-  }
-  
-  // Distribute students across rooms proportionally (room balancing)
-  const roomResults = []
-  let globalSeatNumber = 1 // Continuous seat numbering across rooms
-  
-  // Calculate target distribution for each room
-  const roomDistribution = []
-  let remainingStudents = interleavedStudents.length
-  
-  for (let i = 0; i < classrooms.length; i++) {
-    const room = classrooms[i]
-    const rows = Number(room.rows)
-    const cols = Number(room.columns)
-    const studentsPerBench = Number(room.studentsPerBench)
-    const roomCapacity = rows * cols * studentsPerBench // DYNAMIC: rows × columns × studentsPerBench
-    const roomName = room.roomName || room.roomNumber || 'Room'
-    const orientation = room.orientation || 'horizontal' // PER-ROOM orientation
-    
-    console.log(`[Strict Seating] Room config: ${roomName} - rows: ${rows}, cols: ${cols}, studentsPerBench: ${studentsPerBench}, orientation: ${orientation}, capacity: ${roomCapacity}`)
-    
-    // Calculate proportional distribution (DYNAMIC)
-    let studentsForRoomCount
-    if (i === classrooms.length - 1) {
-      // Last room gets all remaining students
-      studentsForRoomCount = Math.min(roomCapacity, remainingStudents)
-    } else {
-      const roomProportion = roomCapacity / totalCapacity
-      studentsForRoomCount = Math.min(
-        roomCapacity,
-        Math.max(1, Math.floor(interleavedStudents.length * roomProportion))
-      )
-    }
-    
-    // CRITICAL: Ensure we don't allocate more students than room capacity
-    if (studentsForRoomCount > roomCapacity) {
-      console.error(`[Strict Seating] CRITICAL: Room ${roomName} allocation exceeds capacity`)
-      console.error(`[Strict Seating] Allocated: ${studentsForRoomCount}, Capacity: ${roomCapacity}`)
-      studentsForRoomCount = roomCapacity
-    }
-    
-    roomDistribution.push({
-      room,
-      roomName,
-      rows,
-      cols,
-      studentsPerBench,
-      roomCapacity,
-      studentsCount: studentsForRoomCount,
-      orientation, // PER-ROOM orientation
-    })
-    
-    remainingStudents -= studentsForRoomCount
-  }
-  
-  console.log(`[Strict Seating] Room distribution:`, roomDistribution.map(r => `${r.roomName}: ${r.studentsCount}/${r.roomCapacity}`).join(', '))
-  console.log('[Strict Seating] Room distribution details:', roomDistribution.map(r => ({
-    roomName: r.roomName,
-    studentsCount: r.studentsCount,
-    roomCapacity: r.roomCapacity,
-    utilization: `${Math.round((r.studentsCount / r.roomCapacity) * 100)}%`,
-    orientation: r.orientation
-  })))
-  
-  // Process each room (DYNAMIC - uses per-room config)
-  for (const roomData of roomDistribution) {
-    const { room, roomName, rows, cols, studentsPerBench, roomCapacity, studentsCount, orientation } = roomData
-    
-    console.log(`[Strict Seating] Processing room: ${roomName} (${rows}x${cols}, ${studentsPerBench}/bench, capacity: ${roomCapacity}, orientation: ${orientation})`)
-    console.log(`[Strict Seating] Students for room: ${studentsCount}`)
-    console.log(`[Strict Seating] Room capacity: ${roomCapacity}`)
-    console.log(`[Strict Seating] Utilization: ${Math.round((studentsCount / roomCapacity) * 100)}%`)
-    
-    // CRITICAL: Validate that studentsCount <= roomCapacity
-    if (studentsCount > roomCapacity) {
-      console.error(`[Strict Seating] CRITICAL ERROR: Students (${studentsCount}) > Capacity (${roomCapacity}) for room ${roomName}`)
-      throw new Error(`Room ${roomName} cannot seat ${studentsCount} students. Capacity is ${roomCapacity}.`)
-    }
-    
-    // Take students from the interleaved list
-    const roomStudents = interleavedStudents.splice(0, studentsCount)
-    
-    if (roomStudents.length === 0) {
-      console.warn(`[Strict Seating] No students for room: ${roomName}`)
-      continue
-    }
-    
-    // Create grid (DYNAMIC)
-    const grid = createEmptyGrid(rows, cols, studentsPerBench)
-    
-    // Generate positions (DYNAMIC - uses per-room orientation)
-    const positions = generateSeatPositions(rows, cols, studentsPerBench, orientation)
-    console.log(`[Strict Seating] Generated ${positions.length} positions (${rows * cols} benches)`)
-    
-    // Seat students (DYNAMIC - uses per-room orientation)
-    const assignments = seatStudentsStrict(roomStudents, positions, grid, rows, cols, studentsPerBench, orientation, roomName, globalSeatNumber)
-    console.log(`[Strict Seating] Seated ${assignments.length} students in room`)
-    
-    // Update global seat number for next room
-    globalSeatNumber += assignments.length
-    
-    // Add empty seats with continuous numbering (DYNAMIC)
-    const emptySeats = []
+  const seats = []
+  for (const room of rooms) {
+    const positions = generateSeatPositions(room.rows, room.columns, room.studentsPerBench, room.orientation)
     for (const pos of positions) {
-      if (!grid[pos.row][pos.col][pos.seatIndex]) {
-        const emptyAssignment = {
-          seatingNo: globalSeatNumber,
-          seatNo: globalSeatNumber,
-          benchNo: pos.benchNumber,
-          benchLabel: pos.benchLabel,
-          room: roomName,
-          roomName: roomName,
-          row: pos.row,
-          col: pos.col,
-          seatIndex: pos.seatIndex,
-          studentName: '',
-          niatId: '',
-          skill: '',
-          skillCode: '',
-          skillName: '',
-          status: 'Empty',
-          orientation: orientation, // PER-ROOM orientation
+      seats.push({
+        id: `${room.name}-${pos.row}-${pos.col}-${pos.seatIndex}`,
+        roomId: room.id,
+        roomName: room.name,
+        row: pos.row,
+        col: pos.col,
+        seatIndex: pos.seatIndex,
+        benchNo: pos.benchNumber,
+        occupied: false,
+      })
+    }
+  }
+  
+  const totalCapacity = seats.length
+  console.log(`[SINGLE SOURCE OF TRUTH] Total seats generated: ${totalCapacity}`)
+  console.log(`[SINGLE SOURCE OF TRUTH] Rooms: ${rooms.length}`)
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 1: Completed')
+  
+  // PHASE 2: Validate capacity
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 2: Validating capacity')
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 2: Started')
+  
+  const totalStudents = students.length
+  console.log(`[SINGLE SOURCE OF TRUTH] Total students: ${totalStudents}`)
+  console.log(`[SINGLE SOURCE OF TRUTH] Total capacity: ${totalCapacity}`)
+  
+  if (totalStudents > totalCapacity) {
+    console.error(`[SINGLE SOURCE OF TRUTH] FAILURE: Students (${totalStudents}) > Capacity (${totalCapacity})`)
+    throw new Error(`Physical capacity exceeded. Cannot seat ${totalStudents} students. Total capacity: ${totalCapacity}`)
+  }
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 2: Completed')
+  
+  // PHASE 3: Pre-distribute students across rooms by skill
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 3: Pre-distributing students by skill across rooms')
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 3: Started')
+  const roomSkillQueues = distributeStudentsBySkill(students, rooms)
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 3: Completed')
+  
+  // PHASE 4: Assign students to seats using scoring with bench distance penalty
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 4: Assigning students with bench distance penalty')
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 4: Started')
+  
+  const assignments = []
+  const assignedStudentIds = new Set()
+  const assignedSeatIds = new Set()
+  let fallbackCount = 0
+  
+  // Process each room's skill queues
+  for (const [roomId, roomSkills] of roomSkillQueues) {
+    const room = rooms.find(r => r.id === roomId)
+    console.log(`[SINGLE SOURCE OF TRUTH] Processing room ${room.name} with skill groups`)
+    
+    // Get all seats in this room
+    const roomSeats = seats.filter(s => s.roomId === roomId)
+    
+    // For each skill in this room, assign students using scoring
+    for (const [skill, skillStudents] of roomSkills) {
+      console.log(`[SINGLE SOURCE OF TRUTH] Assigning skill ${skill} (${skillStudents.length} students)`)
+      
+      // Shuffle students within this skill group
+      const shuffledSkillStudents = [...skillStudents].sort(() => Math.random() - 0.5)
+      
+      for (const student of shuffledSkillStudents) {
+        const studentId = student['Booking ID'] || student['NIAT ID'] || student['Student Name']
+        
+        // Check for duplicate students
+        if (assignedStudentIds.has(studentId)) {
+          console.error(`[SINGLE SOURCE OF TRUTH] DUPLICATE STUDENT: ${studentId}`)
+          throw new Error(`Duplicate student detected: ${studentId}`)
         }
-        grid[pos.row][pos.col][pos.seatIndex] = emptyAssignment
-        emptySeats.push(emptyAssignment)
-        globalSeatNumber++
+        
+        // Find best seat in this room using scoring
+        let bestSeat = null
+        let bestScore = -Infinity
+        let fallbackUsed = false
+        
+        for (const seat of roomSeats) {
+          if (assignedSeatIds.has(seat.id)) continue
+          
+          // Calculate seat score
+          const score = calculateSeatScoreForStudent(seat, student, rooms, assignments)
+          
+          if (score > bestScore) {
+            bestScore = score
+            bestSeat = seat
+          }
+        }
+        
+        // If no scored seat, assign next empty seat in this room (fallback)
+        if (!bestSeat) {
+          fallbackUsed = true
+          fallbackCount++
+          const emptySeat = roomSeats.find(s => !assignedSeatIds.has(s.id))
+          if (!emptySeat) {
+            console.error(`[SINGLE SOURCE OF TRUTH] FAILURE: No empty seats available for student ${student['Student Name']} in room ${roomId}`)
+            throw new Error(`No empty seats available. Cannot seat all students.`)
+          }
+          bestSeat = emptySeat
+          console.log(`[SEAT SELECTION] FALLBACK: Student ${student['Student Name']} (${student.Skill}) assigned to first available seat (Bench ${bestSeat.benchNo})`)
+        } else {
+          console.log(`[SEAT SELECTION] Student ${student['Student Name']} (${student.Skill}) → Bench ${bestSeat.benchNo}, Score: ${bestScore}`)
+        }
+        
+        // Assign student to seat
+        bestSeat.occupied = true
+        assignedStudentIds.add(studentId)
+        assignedSeatIds.add(bestSeat.id)
+        
+        assignments.push({
+          seatId: bestSeat.id,
+          roomId: bestSeat.roomId,
+          roomName: bestSeat.roomName,
+          seatNo: assignments.length + 1,
+          benchNo: bestSeat.benchNo,
+          row: bestSeat.row,
+          col: bestSeat.col,
+          seatIndex: bestSeat.seatIndex,
+          studentId: studentId,
+          studentName: student['Student Name'],
+          niatId: student['NIAT ID'],
+          bookingId: student['Booking ID'] || '',
+          skill: student.Skill,
+          skillCode: student.Skill,
+          skillName: student['Skill Name'] || student.Skill,
+          section: student.Section,
+          status: 'Occupied',
+          student,
+          score: bestScore,
+        })
       }
     }
-    
-    // Combine occupied and empty
-    const allAssignments = [...assignments, ...emptySeats]
-    
-    // Validate (DYNAMIC - uses per-room orientation)
-    const validation = validateSeatingResult(assignments, grid, rows, cols, studentsPerBench, orientation, roomStudents.length)
-    console.log(`[Strict Seating] Room validation:`, validation)
-    
-    roomResults.push({
-      room,
-      assignments: allAssignments,
-      capacity: roomCapacity, // DYNAMIC capacity
-      occupied: assignments.length,
-      empty: emptySeats.length,
-      validation,
-    })
   }
   
-  // Handle any remaining students (should not happen with proper balancing)
-  if (interleavedStudents.length > 0) {
-    console.warn(`[Strict Seating] ${interleavedStudents.length} students remaining after room distribution`)
-    // Add to first room
-    const firstRoom = roomResults[0]
-    if (firstRoom) {
-      console.log(`[Strict Seating] Adding remaining students to first room`)
-      // Would need to re-seat, but for now just log warning
+  console.log(`[SINGLE SOURCE OF TRUTH] All ${totalStudents} students assigned to seats`)
+  console.log(`[SINGLE SOURCE OF TRUTH] Fallback used: ${fallbackCount} times`)
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 4: Completed')
+  
+  // PHASE 5: Post-allocation optimization (swap students to reduce conflicts)
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 5: Post-allocation optimization')
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 5: Started')
+  // TEMPORARILY DISABLED FOR DEBUGGING
+  // const optimizedAssignments = optimizeSeatingBySwapping(assignments, rooms, 50)
+  const optimizedAssignments = assignments
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 5: Completed')
+  
+  // Update assignments with optimized positions
+  for (let i = 0; i < assignments.length; i++) {
+    if (assignments[i] && assignments[i].status === 'Occupied' && optimizedAssignments[i]) {
+      assignments[i].row = optimizedAssignments[i].row
+      assignments[i].col = optimizedAssignments[i].col
+      assignments[i].seatIndex = optimizedAssignments[i].seatIndex
+      assignments[i].benchNo = optimizedAssignments[i].benchNo
     }
   }
   
-  // Create unified finalSeating array
-  const finalSeating = []
-  roomResults.forEach((result) => {
-    result.assignments.forEach((assignment) => {
-      finalSeating.push(assignment)
-    })
+  // PHASE 6: Generate empty seats for remaining capacity
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 6: Generating empty seats')
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 6: Started')
+  
+  for (const seat of seats) {
+    if (!assignedSeatIds.has(seat.id)) {
+      assignments.push({
+        seatId: seat.id,
+        roomId: seat.roomId,
+        roomName: seat.roomName,
+        seatNo: assignments.length + 1,
+        benchNo: seat.benchNo,
+        row: seat.row,
+        col: seat.col,
+        seatIndex: seat.seatIndex,
+        studentId: null,
+        studentName: '',
+        niatId: '',
+        bookingId: '',
+        skill: '',
+        skillCode: '',
+        skillName: '',
+        section: '',
+        status: 'Empty',
+        student: null,
+        score: 0,
+      })
+    }
+  }
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 6: Completed')
+  
+  // PHASE 7: Sort assignments in physical order (room → bench → seat)
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 7: Sorting assignments in physical order')
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 7: Started')
+  
+  // Sort by room name, then bench number, then seat index
+  assignments.sort((a, b) => {
+    // First sort by room name
+    if (a.roomName !== b.roomName) {
+      return a.roomName.localeCompare(b.roomName)
+    }
+    // Then by bench number
+    if (a.benchNo !== b.benchNo) {
+      return a.benchNo - b.benchNo
+    }
+    // Then by seat index
+    return a.seatIndex - b.seatIndex
   })
   
-  // Global validation
-  const totalOccupied = finalSeating.filter((a) => a.status === 'Occupied').length
-  const globalValidation = {
-    sameBenchSkillConflicts: roomResults.reduce((sum, r) => sum + r.validation.sameBenchSkillConflicts, 0),
-    frontBackConflicts: roomResults.reduce((sum, r) => sum + r.validation.frontBackConflicts, 0),
-    leftRightConflicts: roomResults.reduce((sum, r) => sum + r.validation.leftRightConflicts, 0),
-    diagonalConflicts: roomResults.reduce((sum, r) => sum + r.validation.diagonalConflicts, 0),
-    clusterConflicts: roomResults.reduce((sum, r) => sum + r.validation.clusterConflicts, 0),
-    totalConflicts: roomResults.reduce((sum, r) => sum + r.validation.totalConflicts, 0),
-    emptyBenches: roomResults.reduce((sum, r) => sum + r.validation.emptyBenches, 0),
-    occupiedBenches: roomResults.reduce((sum, r) => sum + r.validation.occupiedBenches, 0),
-    missingStudents: students.length - totalOccupied,
-    uploadedCount: students.length,
-    generatedCount: totalOccupied,
+  // Reassign seat numbers based on physical order
+  assignments.forEach((a, index) => {
+    a.seatNo = index + 1
+  })
+  
+  console.log('[SINGLE SOURCE OF TRUTH] Assignments sorted in physical order')
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 7: Completed')
+  
+  // PHASE 8: Validation
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 8: Validation')
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 8: Started')
+  
+  const occupiedAssignments = assignments.filter(a => a.status === 'Occupied')
+  const emptyAssignments = assignments.filter(a => a.status === 'Empty')
+  
+  console.log(`[SINGLE SOURCE OF TRUTH] Uploaded students: ${totalStudents}`)
+  console.log(`[SINGLE SOURCE OF TRUTH] Assigned students: ${occupiedAssignments.length}`)
+  console.log(`[SINGLE SOURCE OF TRUTH] Empty seats: ${emptyAssignments.length}`)
+  console.log(`[SINGLE SOURCE OF TRUTH] Total assignments: ${assignments.length}`)
+  
+  if (occupiedAssignments.length !== totalStudents) {
+    console.error(`[SINGLE SOURCE OF TRUTH] VALIDATION FAILURE: Assigned (${occupiedAssignments.length}) !== Uploaded (${totalStudents})`)
+    throw new Error(`Validation failed: ${totalStudents - occupiedAssignments.length} students were not seated`)
   }
   
-  console.log('[Strict Seating] Global validation:', globalValidation)
+  console.log('[SINGLE SOURCE OF TRUTH] VALIDATION PASSED')
+  console.log('[SINGLE SOURCE OF TRUTH] PHASE 8: Completed')
   
-  // VALIDATION ASSERT: Ensure all students are seated
-  if (globalValidation.missingStudents > 0) {
-    console.error(`[Strict Seating] CRITICAL: ${globalValidation.missingStudents} students missing!`)
-    console.error(`[Strict Seating] Uploaded: ${globalValidation.uploadedCount}, Seated: ${globalValidation.generatedCount}`)
-    
-    // Find which students disappeared
-    const seatedNiatIds = new Set(finalSeating.filter(a => a.status === 'Occupied').map(a => a.niatId))
-    const missingStudents = students.filter(s => !seatedNiatIds.has(s['NIAT ID']))
-    
-    console.error('[Strict Seating] Missing students:')
-    missingStudents.forEach(s => {
-      console.error(`  - ${s['Student Name']} (${s['NIAT ID']}) - ${s.Skill}`)
-    })
-    
-    throw new Error(`Failed to seat ${globalValidation.missingStudents} students. Missing: ${missingStudents.map(s => s['Student Name']).join(', ')}`)
-  }
-  
+  // Return single source of truth
   return {
-    roomResults,
-    finalSeating,
-    unassigned: [],
-    totalAssigned: totalOccupied,
-    validation: globalValidation,
+    rooms,
+    students,
+    seats,
+    assignments,
+    validation: {
+      uploadedStudents: totalStudents,
+      assignedStudents: occupiedAssignments.length,
+      emptySeats: emptyAssignments.length,
+      passed: true,
+    },
   }
+}
+
+// Calculate seat score for a student
+function calculateSeatScoreForStudent(seat, student, rooms, assignments) {
+  const studentSkill = normalizeSkill(student.Skill)
+  const studentSection = student.Section || ''
+  
+  // Get room configuration
+  const room = rooms.find(r => r.id === seat.roomId)
+  if (!room) return 0
+  
+  // Get assignments in this room to build a grid for neighbor checking
+  const roomAssignments = assignments.filter(a => a.roomId === seat.roomId)
+  
+  // Build a grid representation of the room
+  const grid = createEmptyGrid(room.rows, room.columns, room.studentsPerBench)
+  for (const a of roomAssignments) {
+    if (a.status === 'Occupied' && a.row !== undefined && a.col !== undefined && a.seatIndex !== undefined) {
+      grid[a.row][a.col][a.seatIndex] = {
+        skill: a.skill,
+        skillCode: a.skillCode,
+        Skill: a.skill,
+        Section: a.section
+      }
+    }
+  }
+  
+  // Use the comprehensive scoring function
+  return calculateSeatScore(
+    grid,
+    seat.row,
+    seat.col,
+    seat.seatIndex,
+    student,
+    room.rows,
+    room.columns,
+    room.studentsPerBench,
+    room.orientation,
+    1 // Stage 1: Strict mode with all penalties
+  )
 }

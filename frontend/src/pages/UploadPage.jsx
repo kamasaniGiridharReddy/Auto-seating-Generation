@@ -155,16 +155,24 @@ export default function UploadPage() {
         </div>
 
         <div className="space-y-6">
-          <CsvUploadZone
-            onFileSelect={parseFile}
-            isDragging={isDragging}
-            onDragEnter={handleDragEnter}
-            onDragLeave={handleDragLeave}
-            onDragOver={handleDragOver}
-            onDrop={handleDrop}
-            isParsing={isParsing}
-            fileName={fileName}
-          />
+          <div className="flex flex-col gap-2">
+            <CsvUploadZone
+              onFileSelect={parseFile}
+              isDragging={isDragging}
+              onDragEnter={handleDragEnter}
+              onDragLeave={handleDragLeave}
+              onDragOver={handleDragOver}
+              onDrop={handleDrop}
+              isParsing={isParsing}
+              fileName={fileName}
+            />
+            <div className="flex items-center gap-2 text-sm text-[var(--grit-cream)]/60">
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span>Download the sample format and upload student data using the same column structure.</span>
+            </div>
+          </div>
 
           <ValidationAlerts errors={errors} warnings={warnings} />
 
@@ -187,6 +195,21 @@ export default function UploadPage() {
 
           <div className="flex flex-col gap-3 border-t border-[var(--grit-brown-600)]/50 pt-8 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
             <div className="flex flex-col gap-3 sm:flex-row">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  const link = document.createElement('a')
+                  link.href = '/sample_students.csv'
+                  link.download = 'GRIT_FORMAT_SHEET.csv'
+                  document.body.appendChild(link)
+                  link.click()
+                  document.body.removeChild(link)
+                }}
+                className="sm:min-w-[200px]"
+              >
+                Download Sample CSV
+              </Button>
               <Button
                 type="button"
                 variant="secondary"

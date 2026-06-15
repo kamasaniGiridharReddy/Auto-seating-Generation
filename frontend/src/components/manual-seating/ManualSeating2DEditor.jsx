@@ -67,6 +67,9 @@ function SeatCell({ seat, skillCodes, onSeatChange, onSelectSeat, selected }) {
       {seat.studentName && (
         <p className="truncate pl-5 text-[9px] text-[var(--grit-cream)]/45">{seat.studentName}</p>
       )}
+      {seat.bookingId && (
+        <p className="truncate pl-5 text-[9px] text-[var(--grit-gold)]/50">{seat.bookingId}</p>
+      )}
     </div>
   )
 }

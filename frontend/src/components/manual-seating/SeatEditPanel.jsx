@@ -70,6 +70,11 @@ export default function SeatEditPanel({
             onChange={(e) => onUpdateStudent(seat.id, { studentName: e.target.value })}
           />
           <Input
+            label="Booking ID"
+            value={seat.bookingId ?? ''}
+            onChange={(e) => onUpdateStudent(seat.id, { bookingId: e.target.value })}
+          />
+          <Input
             label="NIAT ID"
             value={seat.niatId ?? ''}
             onChange={(e) => onUpdateStudent(seat.id, { niatId: e.target.value })}

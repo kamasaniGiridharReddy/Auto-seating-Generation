@@ -16,11 +16,12 @@ except Exception as e:
 
 if __name__ == "__main__":
     try:
-        print("[FLASK STARTUP] Starting Flask server on port 5000...")
+        port = int(os.environ.get("PORT", 5000))
+        print(f"[FLASK STARTUP] Starting Flask server on port {port}...")
         app.run(
             debug=app.config.get('DEBUG', True),
             host='0.0.0.0',
-            port=5000
+            port=port
         )
     except Exception as e:
         print("[FLASK CRASH] Error during server startup:", str(e))

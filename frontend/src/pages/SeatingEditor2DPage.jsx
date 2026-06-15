@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, memo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import AppLayout from '../components/layout/AppLayout'
 import Button from '../components/ui/Button'
+import { ErrorBoundary } from '../components/ui/ErrorBoundary'
 import { loadClassroomConfig } from '../utils/classroomStorage'
 import { skillToColor } from '../utils/skillColors'
 import { getSkillShortCode } from '../utils/skillLabels'
@@ -21,8 +22,9 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import * as XLSX from 'xlsx'
 
-function SortableSeat({ seat, isConflict, onDragStart, benchNumber, seatIndex, studentsPerBench }) {
+const SortableSeat = memo(function SortableSeat({ seat, isConflict, onDragStart, benchNumber, seatIndex, studentsPerBench }) {
   const {
     attributes,
     listeners,
@@ -30,7 +32,7 @@ function SortableSeat({ seat, isConflict, onDragStart, benchNumber, seatIndex, s
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: seat.seatNo })
+  } = useSortable({ id: seat.seatNo || seat.seatingNo || `seat-${benchNumber}-${seatIndex}` })
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -38,21 +40,15 @@ function SortableSeat({ seat, isConflict, onDragStart, benchNumber, seatIndex, s
     opacity: isDragging ? 0.5 : 1,
   }
 
-  const isEmpty = seat.status === 'Empty' || !seat.studentName
-  const fullSkillName = seat.skillName || seat.skill || seat.skillCode
+  // Defensive rendering with defaults
+  const isEmpty = seat.status === 'Empty' || !seat.studentName || !seat.student
+  const fullSkillName = seat.skillName || seat.skill || seat.skillCode || ''
   const skillShortCode = getSkillShortCode(fullSkillName)
   const skillColor = skillToColor(fullSkillName)
   
   // Calculate display seat number based on bench position (not global seatNo)
-  const actualSeatNo = seat.seatNo || seat.seatingNo
+  const actualSeatNo = seat.seatNo || seat.seatingNo || ((benchNumber - 1) * studentsPerBench) + seatIndex + 1
   const displayedSeatNo = ((benchNumber - 1) * studentsPerBench) + seatIndex + 1
-  
-  console.log('[DISPLAY NUMBER]', {
-    bench: benchNumber,
-    seatIndex,
-    actualSeatNo,
-    displaySeatNo: displayedSeatNo
-  })
 
   return (
     <div
@@ -79,14 +75,14 @@ function SortableSeat({ seat, isConflict, onDragStart, benchNumber, seatIndex, s
       ) : (
         <div className="space-y-1">
           <div className="text-xs font-bold text-[var(--grit-cream)] truncate">
-            {seat.studentName || seat.student}
+            {seat.studentName || seat.student || 'Unknown'}
           </div>
           <div 
             className="text-[10px] px-1.5 py-0.5 rounded inline-block"
             style={{ backgroundColor: `${skillColor}20`, color: skillColor }}
             title={fullSkillName}
           >
-            {skillShortCode}
+            {skillShortCode || '?'}
           </div>
           <div className="text-[10px] text-[var(--grit-cream)]/50">
             #{displayedSeatNo}
@@ -95,17 +91,118 @@ function SortableSeat({ seat, isConflict, onDragStart, benchNumber, seatIndex, s
       )}
     </div>
   )
-}
+}, (prevProps, nextProps) => {
+  // Custom comparison to prevent unnecessary re-renders
+  const prevSeatNo = prevProps.seat?.seatNo || prevProps.seat?.seatingNo
+  const nextSeatNo = nextProps.seat?.seatNo || nextProps.seat?.seatingNo
+  return prevSeatNo === nextSeatNo &&
+         prevProps.isConflict === nextProps.isConflict &&
+         (prevProps.seat?.studentName || prevProps.seat?.student) === (nextProps.seat?.studentName || nextProps.seat?.student) &&
+         (prevProps.seat?.skill || prevProps.seat?.skillCode) === (nextProps.seat?.skill || nextProps.seat?.skillCode)
+})
 
 // Normalize room name for safe comparison
 function normalizeRoomName(room) {
   return String(room || '')
     .trim()
-    .toLowerCase()
+    .toUpperCase()
     .replace(/\s+/g, ' ')
 }
 
-export default function SeatingEditor2DPage() {
+// Normalize skill name for comparison
+function normalizeSkill(skill) {
+  if (!skill) return ''
+  return String(skill).toUpperCase().trim()
+}
+
+// Calculate total skill counts from students data
+function calculateTotalSkillCounts(students) {
+  const skillCounts = new Map()
+  for (const student of students) {
+    const skill = normalizeSkill(student.Skill || student.skill || student.skillCode || '')
+    if (skill) {
+      skillCounts.set(skill, (skillCounts.get(skill) || 0) + 1)
+    }
+  }
+  return skillCounts
+}
+
+// Calculate room-wise skill distribution from assignments
+function calculateRoomSkillDistribution(assignments) {
+  const roomSkills = new Map()
+  for (const assignment of assignments) {
+    if (assignment.status !== 'Occupied') continue
+    const roomName = normalizeRoomName(assignment.roomName || assignment.room || assignment.roomNumber || '')
+    const skill = normalizeSkill(assignment.skill || assignment.skillCode || assignment.skillName || '')
+    if (!roomName || !skill) continue
+    
+    if (!roomSkills.has(roomName)) {
+      roomSkills.set(roomName, new Map())
+    }
+    const roomMap = roomSkills.get(roomName)
+    roomMap.set(skill, (roomMap.get(skill) || 0) + 1)
+  }
+  return roomSkills
+}
+
+// Export to Excel with 3 sheets
+function exportToExcel(seatingData, roomSkillDistribution, totalSkillCounts) {
+  const workbook = XLSX.utils.book_new()
+  
+  // Sheet 1: FINAL SEATING ARRANGEMENT
+  const seatingDataForExcel = seatingData.assignments
+    .filter(a => a.status === 'Occupied')
+    .map(a => ({
+      'Student Name': a.studentName || '',
+      'Skill': a.skillName || a.skill || a.skillCode || '',
+      'Room Number': a.roomName || a.room || '',
+      'Bench Number': a.benchNo || '',
+      'Seat Number': a.seatNo || ''
+    }))
+  const seatingWorksheet = XLSX.utils.json_to_sheet(seatingDataForExcel)
+  XLSX.utils.book_append_sheet(workbook, seatingWorksheet, 'FINAL SEATING')
+  
+  // Sheet 2: SKILL SUMMARY
+  const skillSummaryData = Array.from(totalSkillCounts.entries()).map(([skill, count]) => ({
+    'Skill': skill,
+    'Count': count
+  }))
+  const skillSummaryWorksheet = XLSX.utils.json_to_sheet(skillSummaryData)
+  XLSX.utils.book_append_sheet(workbook, skillSummaryWorksheet, 'SKILL SUMMARY')
+  
+  // Sheet 3: ROOM WISE SKILL DISTRIBUTION
+  const roomDistributionData = []
+  for (const [roomName, skillMap] of roomSkillDistribution.entries()) {
+    for (const [skill, count] of skillMap.entries()) {
+      roomDistributionData.push({
+        'Room': roomName,
+        'Skill': skill,
+        'Count': count
+      })
+    }
+  }
+  const roomDistributionWorksheet = XLSX.utils.json_to_sheet(roomDistributionData)
+  XLSX.utils.book_append_sheet(workbook, roomDistributionWorksheet, 'ROOM DISTRIBUTION')
+  
+  // Generate and download
+  XLSX.writeFile(workbook, 'seating_arrangement.xlsx')
+}
+
+// Universal room name extractor - checks all possible field names
+function getRoomName(seat) {
+  return (
+    seat.roomName ||
+    seat.room ||
+    seat.Room ||
+    seat.ROOM ||
+    seat.room_name ||
+    seat.classroom ||
+    seat.roomNumber ||
+    ''
+  )
+}
+
+function SeatingEditor2DPageContent() {
   const navigate = useNavigate()
   const [seatingData, setSeatingData] = useState(null)
   const [originalSeating, setOriginalSeating] = useState(null)
@@ -113,6 +210,10 @@ export default function SeatingEditor2DPage() {
   const [selectedRoom, setSelectedRoom] = useState('')
   const [conflicts, setConflicts] = useState(new Set())
   const [saveMessage, setSaveMessage] = useState(null)
+  const [loadingError, setLoadingError] = useState(null)
+  const [loadingTimeout, setLoadingTimeout] = useState(false)
+  const [totalSkillCounts, setTotalSkillCounts] = useState(new Map())
+  const [roomSkillDistribution, setRoomSkillDistribution] = useState(new Map())
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -122,44 +223,114 @@ export default function SeatingEditor2DPage() {
   )
 
   useEffect(() => {
+    console.log('[2D EDITOR] ============================================')
+    console.log('[2D EDITOR] DATA LOADING DIAGNOSTICS')
+    console.log('[2D EDITOR] ============================================')
+
+    // Timeout protection: if loading takes > 5 seconds, show error
+    const timeoutId = setTimeout(() => {
+      console.error('[2D EDITOR] TIMEOUT: Data loading exceeded 5 seconds')
+      setLoadingTimeout(true)
+      
+      // Print current state
+      console.error('[2D EDITOR] Current state at timeout:')
+      console.error('[2D EDITOR] seatingData:', seatingData)
+      console.error('[2D EDITOR] config:', config)
+      console.error('[2D EDITOR] selectedRoom:', selectedRoom)
+      
+      // Try to load and inspect localStorage
+      try {
+        const storedSeating = localStorage.getItem('grit-auto-seating-result')
+        console.error('[2D EDITOR] localStorage grit-auto-seating-result exists:', !!storedSeating)
+        if (storedSeating) {
+          const parsed = JSON.parse(storedSeating)
+          console.error('[2D EDITOR] Parsed seating data schema:', {
+            hasFinalSeating: !!parsed?.finalSeating,
+            finalSeatingLength: parsed?.finalSeating?.length,
+            hasRoomResults: !!parsed?.roomResults,
+            roomResultsLength: parsed?.roomResults?.length,
+            hasValidation: !!parsed?.validation,
+            hasIntegrityAudit: !!parsed?.integrityAudit,
+            keys: Object.keys(parsed || {}),
+          })
+          
+          if (parsed?.finalSeating && parsed.finalSeating.length > 0) {
+            console.error('[2D EDITOR] First seat sample:', parsed.finalSeating[0])
+            console.error('[2D EDITOR] Expected seat properties:', ['roomName', 'room', 'studentName', 'skill', 'status', 'seatNo', 'seatingNo', 'benchNo', 'seatIndex', 'row', 'col'])
+            console.error('[2D EDITOR] Actual seat properties:', Object.keys(parsed.finalSeating[0]))
+          }
+        }
+      } catch (err) {
+        console.error('[2D EDITOR] Error inspecting localStorage:', err)
+      }
+    }, 5000)
+
     const storedSeating = localStorage.getItem('grit-auto-seating-result')
+    console.log('[2D EDITOR] localStorage grit-auto-seating-result exists:', !!storedSeating)
+    
     if (storedSeating) {
-      const parsed = JSON.parse(storedSeating)
-      setSeatingData(parsed)
-      setOriginalSeating(JSON.parse(JSON.stringify(parsed)))
+      try {
+        const parsed = JSON.parse(storedSeating)
+        console.log('[2D EDITOR] Parsed seating data keys:', Object.keys(parsed))
+        console.log('[2D EDITOR] Has finalSeating:', !!parsed?.finalSeating)
+        console.log('[2D EDITOR] finalSeating length:', parsed?.finalSeating?.length)
+        
+        if (parsed?.finalSeating && parsed.finalSeating.length > 0) {
+          console.log('[2D EDITOR] First seat sample:', parsed.finalSeating[0])
+          console.log('[2D EDITOR] First seat properties:', Object.keys(parsed.finalSeating[0]))
+          
+          // Check for required properties
+          const requiredProps = ['roomName', 'room', 'studentName', 'skill', 'status', 'seatNo', 'seatingNo', 'benchNo', 'seatIndex', 'row', 'col']
+          const missingProps = requiredProps.filter(prop => !(prop in parsed.finalSeating[0]))
+          if (missingProps.length > 0) {
+            console.error('[2D EDITOR] MISSING PROPERTIES in seat data:', missingProps)
+          }
+        }
+        
+        setSeatingData(parsed)
+        setOriginalSeating(JSON.parse(JSON.stringify(parsed)))
+        
+        // Calculate total skill counts from students data
+        if (parsed?.students) {
+          const skillCounts = calculateTotalSkillCounts(parsed.students)
+          setTotalSkillCounts(skillCounts)
+        }
+        
+        // Calculate room-wise skill distribution from assignments
+        if (parsed?.assignments) {
+          const roomDistribution = calculateRoomSkillDistribution(parsed.assignments)
+          setRoomSkillDistribution(roomDistribution)
+        }
+      } catch (err) {
+        console.error('[2D EDITOR] Error parsing seating data:', err)
+        setLoadingError(`Failed to parse seating data: ${err.message}`)
+      }
+    } else {
+      console.error('[2D EDITOR] No seating data found in localStorage')
+      setLoadingError('No seating data found. Please generate seating first.')
     }
+    
     // Use current Dashboard config from localStorage (NOT stale config from seating results)
     // This ensures 2D Editor uses the latest classroom configuration
     const classroomConfig = loadClassroomConfig()
+    console.log('[2D EDITOR] Classroom config loaded:', !!classroomConfig)
+    console.log('[2D EDITOR] Classroom config has classrooms:', !!classroomConfig?.classrooms)
+    console.log('[2D EDITOR] Classroom count:', classroomConfig?.classrooms?.length)
+    
+    if (classroomConfig?.classrooms) {
+      console.log('[2D EDITOR] First classroom sample:', classroomConfig.classrooms[0])
+    }
+    
     setConfig(classroomConfig)
-
-    // Debug: Log data source and configuration
-    console.log('[2D EDITOR] Data Source Verification:')
-    console.log('[2D EDITOR] Classroom config source: localStorage (current Dashboard config)')
-    console.log('[2D EDITOR] Seating data source: localStorage (grit-auto-seating-result)')
-    console.log('[2D EDITOR] Classroom count:', config?.classrooms?.length || 0)
-    console.log('[2D EDITOR] Room configurations:', config?.classrooms?.map(r => ({
-      roomName: r.roomName,
-      rows: r.rows,
-      columns: r.columns,
-      studentsPerBench: r.studentsPerBench,
-      orientation: r.orientation,
-      capacity: r.rows * r.columns * r.studentsPerBench
-    })))
-    console.log('[2D EDITOR] Total seats in seating data:', seatingData?.finalSeating?.length || 0)
+    
+    // Clear timeout if loading completes
+    return () => clearTimeout(timeoutId)
   }, [])
 
   // Dynamically populate available rooms from seating data
   const availableRooms = useMemo(() => {
-    if (!seatingData?.finalSeating) return []
-    const rooms = [
-      ...new Set(
-        seatingData.finalSeating
-          .map(seat => seat.roomName || seat.room)
-          .filter(Boolean)
-      )
-    ]
-    return rooms.sort()
+    if (!seatingData?.rooms) return []
+    return seatingData.rooms.map(room => room.name).sort()
   }, [seatingData])
 
   // Set initial selected room from available rooms
@@ -178,70 +349,9 @@ export default function SeatingEditor2DPage() {
     )
     if (roomByName) return roomByName
     
-    // Debug: Log when room not found
-    console.log('[SELECTED ROOM]', {
-      selectedRoom,
-      availableRooms: config.classrooms.map(r => r.roomName || r.roomNumber),
-      normalizedSelected: normalizeRoomName(selectedRoom),
-      normalizedAvailable: config.classrooms.map(r => normalizeRoomName(r.roomName || r.roomNumber))
-    })
-    
     // Return null instead of hardcoded fallback - this prevents using wrong room config
     return null
   }, [config, selectedRoom])
-
-  const roomSeating = useMemo(() => {
-    if (!seatingData?.finalSeating || !selectedRoom) return []
-    const filtered = seatingData.finalSeating.filter(
-      s => normalizeRoomName(s.roomName || s.room) === normalizeRoomName(selectedRoom)
-    )
-    const occupiedSeats = filtered.filter(s => s.status === 'Occupied').length
-    
-    // Debug: Show seat number range for this room
-    const seatNumbers = filtered.map(s => s.seatNo || s.seatingNo).sort((a, b) => a - b)
-    const benchNumbers = [...new Set(filtered.map(s => s.benchNo))].sort((a, b) => a - b)
-    
-    console.log('[ROOM ASSIGNMENTS]', {
-      selectedRoom,
-      assignments: filtered,
-      filteredCount: filtered.length,
-      occupiedSeats,
-      studentCount: occupiedSeats,
-      totalSeats: seatingData.finalSeating.length,
-      seatNumberRange: {
-        min: seatNumbers[0],
-        max: seatNumbers[seatNumbers.length - 1],
-        count: seatNumbers.length
-      },
-      benchNumberRange: {
-        min: benchNumbers[0],
-        max: benchNumbers[benchNumbers.length - 1],
-        count: benchNumbers.length
-      }
-    })
-    
-    console.log('[2D EDITOR] Filtered room seats:', {
-      selectedRoom,
-      filteredCount: filtered.length,
-      occupiedSeats,
-      studentCount: occupiedSeats,
-      totalSeats: seatingData.finalSeating.length
-    })
-    console.log('[2D EDITOR] Room config from localStorage:', {
-      roomId: activeRoom?.id,
-      roomConfig: {
-        roomName: activeRoom?.roomName,
-        rows: activeRoom?.rows,
-        columns: activeRoom?.columns,
-        studentsPerBench: activeRoom?.studentsPerBench,
-        orientation: activeRoom?.orientation
-      },
-      occupiedSeats,
-      studentCount: occupiedSeats,
-      orientation: activeRoom?.orientation
-    })
-    return filtered
-  }, [seatingData, selectedRoom, activeRoom])
 
   const classroomGrid = useMemo(() => {
     if (!activeRoom) return null
@@ -252,18 +362,40 @@ export default function SeatingEditor2DPage() {
       totalBenches: Number(activeRoom.rows) * Number(activeRoom.columns),
       orientation: activeRoom.orientation || 'horizontal'
     }
-    console.log('[GRID DATA]', {
-      selectedRoom,
-      grid,
-      roomConfig: activeRoom
-    })
-    console.log('[2D Editor] Classroom grid config:', {
-      selectedRoom,
-      grid,
-      roomConfig: activeRoom
-    })
     return grid
   }, [activeRoom, selectedRoom])
+
+  const roomSeating = useMemo(() => {
+    if (!seatingData?.assignments || !selectedRoom || !classroomGrid) return []
+    
+    // DIAGNOSTICS: Check room field mapping
+    console.log('[2D EDITOR] Selected Room:', selectedRoom)
+    console.log('[2D EDITOR] Total assignments:', seatingData.assignments.length)
+    
+    // Filter assignments for this room (directly from assignments array)
+    const filtered = seatingData.assignments.filter(
+      a => normalizeRoomName(a.roomName) === normalizeRoomName(selectedRoom)
+    )
+    
+    console.log('[2D EDITOR] Matched assignments:', filtered.length)
+    
+    // Sort by bench number, then seat index to ensure physical ordering
+    const sorted = filtered.sort((a, b) => {
+      if (a.benchNo !== b.benchNo) {
+        return a.benchNo - b.benchNo
+      }
+      return a.seatIndex - b.seatIndex
+    })
+    
+    // Validation: occupiedSeats === records found in assignments for this room
+    const occupiedSeats = sorted.filter(a => a.status === 'Occupied').length
+    const emptySeats = sorted.filter(a => a.status === 'Empty').length
+    console.log('[2D EDITOR] Occupied seats:', occupiedSeats)
+    console.log('[2D EDITOR] Empty seats:', emptySeats)
+    
+    // Return assignments in physical order
+    return sorted
+  }, [seatingData, selectedRoom, classroomGrid])
 
   // Validation: check for same skill adjacent
   const validateSeating = (seating) => {
@@ -273,11 +405,11 @@ export default function SeatingEditor2DPage() {
     const { rows, columns, studentsPerBench } = classroomGrid
     const seatMap = new Map()
     seating.forEach(s => {
-      seatMap.set(s.seatNo || s.seatingNo, s)
+      seatMap.set(s.seatNo, s)
     })
 
     seating.forEach(seat => {
-      const seatNo = seat.seatNo || seat.seatingNo
+      const seatNo = seat.seatNo
       if (!seat.studentName || seat.status === 'Empty') return
 
       const skill = seat.skillName || seat.skill || seat.skillCode
@@ -341,10 +473,6 @@ export default function SeatingEditor2DPage() {
     if (roomSeating.length > 0) {
       const newConflicts = validateSeating(roomSeating)
       setConflicts(newConflicts)
-      console.log('[2D Editor] Validation complete:', {
-        conflicts: newConflicts.size,
-        room: selectedRoom
-      })
     } else {
       setConflicts(new Set())
     }
@@ -352,13 +480,7 @@ export default function SeatingEditor2DPage() {
 
   // Debug: Log room switching
   useEffect(() => {
-    console.log('[2D Editor] Room switched:', {
-      selectedRoom,
-      availableRooms,
-      totalSeats: seatingData?.finalSeating?.length || 0,
-      filteredSeats: roomSeating.length,
-      gridConfig: classroomGrid
-    })
+    // Room switch logging removed for performance
   }, [selectedRoom, availableRooms, roomSeating.length, classroomGrid, seatingData])
 
   const handleDragEnd = (event) => {
@@ -369,7 +491,7 @@ export default function SeatingEditor2DPage() {
       const newIndex = roomSeating.findIndex(s => (s.seatNo || s.seatingNo) === over.id)
 
       if (oldIndex !== -1 && newIndex !== -1) {
-        // Swap students between seats
+        // Swap students between seats (including empty seats)
         const updatedSeating = [...roomSeating]
         const tempStudent = { ...updatedSeating[oldIndex] }
         const tempStudent2 = { ...updatedSeating[newIndex] }
@@ -377,33 +499,71 @@ export default function SeatingEditor2DPage() {
         // Swap student info but keep seat positions
         updatedSeating[oldIndex] = {
           ...updatedSeating[oldIndex],
-          studentName: tempStudent2.studentName || tempStudent2.student,
-          student: tempStudent2.studentName || tempStudent2.student,
-          niatId: tempStudent2.niatId || tempStudent2.studentId,
-          skillName: tempStudent2.skillName || tempStudent2.skill || tempStudent2.skillCode,
-          skill: tempStudent2.skillName || tempStudent2.skill || tempStudent2.skillCode,
-          skillCode: tempStudent2.skillCode || tempStudent2.skillName || tempStudent2.skill,
-          status: tempStudent2.status || (tempStudent2.studentName ? 'Occupied' : 'Empty')
+          studentName: tempStudent2.studentName || tempStudent2.student || '',
+          student: tempStudent2.studentName || tempStudent2.student || '',
+          niatId: tempStudent2.niatId || tempStudent2.studentId || '',
+          bookingId: tempStudent2.bookingId || '',
+          skillName: tempStudent2.skillName || tempStudent2.skill || tempStudent2.skillCode || '',
+          skill: tempStudent2.skillName || tempStudent2.skill || tempStudent2.skillCode || '',
+          skillCode: tempStudent2.skillCode || tempStudent2.skillName || tempStudent2.skill || '',
+          status: tempStudent2.studentName || tempStudent2.student ? 'Occupied' : 'Empty'
         }
 
         updatedSeating[newIndex] = {
           ...updatedSeating[newIndex],
-          studentName: tempStudent.studentName || tempStudent.student,
-          student: tempStudent.studentName || tempStudent.student,
-          niatId: tempStudent.niatId || tempStudent.studentId,
-          skillName: tempStudent.skillName || tempStudent.skill || tempStudent.skillCode,
-          skill: tempStudent.skillName || tempStudent.skill || tempStudent.skillCode,
-          skillCode: tempStudent.skillCode || tempStudent.skillName || tempStudent.skill,
-          status: tempStudent.status || (tempStudent.studentName ? 'Occupied' : 'Empty')
+          studentName: tempStudent.studentName || tempStudent.student || '',
+          student: tempStudent.studentName || tempStudent.student || '',
+          niatId: tempStudent.niatId || tempStudent.studentId || '',
+          bookingId: tempStudent.bookingId || '',
+          skillName: tempStudent.skillName || tempStudent.skill || tempStudent.skillCode || '',
+          skill: tempStudent.skillName || tempStudent.skill || tempStudent.skillCode || '',
+          skillCode: tempStudent.skillCode || tempStudent.skillName || tempStudent.skill || '',
+          status: tempStudent.studentName || tempStudent.student ? 'Occupied' : 'Empty'
         }
 
-        // Update the full seating data
+        // Update the full seating data - update assignments (new single source of truth)
         const updatedFullSeating = {
           ...seatingData,
-          finalSeating: seatingData.finalSeating.map(s => {
-            const updated = updatedSeating.find(us => (us.seatNo || us.seatingNo) === (s.seatNo || s.seatingNo))
-            return updated || s
-          })
+          assignments: seatingData.assignments.map(a => {
+            const seatNo = a.seatNo || a.seatingNo
+            const updated = updatedSeating.find(us => (us.seatNo || us.seatingNo) === seatNo)
+            if (updated) {
+              return {
+                ...a,
+                studentName: updated.studentName,
+                student: updated.student,
+                niatId: updated.niatId,
+                bookingId: updated.bookingId,
+                skillName: updated.skillName,
+                skill: updated.skill,
+                skillCode: updated.skillCode,
+                status: updated.status
+              }
+            }
+            return a
+          }),
+          // Also update finalSeating for backward compatibility
+          finalSeating: seatingData.finalSeating ? seatingData.finalSeating.map(s => {
+            const seatNo = s.seatNo || s.seatingNo
+            const updated = updatedSeating.find(us => (us.seatNo || us.seatingNo) === seatNo)
+            if (updated && updated.status === 'Occupied') {
+              return {
+                ...s,
+                studentName: updated.studentName,
+                student: updated.student,
+                niatId: updated.niatId,
+                bookingId: updated.bookingId,
+                skillName: updated.skillName,
+                skill: updated.skill,
+                skillCode: updated.skillCode,
+                status: updated.status
+              }
+            }
+            if (updated && updated.status === 'Empty') {
+              return null
+            }
+            return s
+          }).filter(s => s !== null) : []
         }
 
         setSeatingData(updatedFullSeating)
@@ -426,43 +586,68 @@ export default function SeatingEditor2DPage() {
     }
   }
 
+  const handleDownloadExcel = () => {
+    try {
+      exportToExcel(seatingData, roomSkillDistribution, totalSkillCounts)
+      setSaveMessage('Excel file downloaded successfully!')
+      setTimeout(() => setSaveMessage(null), 3000)
+    } catch (error) {
+      console.error('[2D EDITOR] Error exporting Excel:', error)
+      setSaveMessage('Failed to export Excel file.')
+      setTimeout(() => setSaveMessage(null), 3000)
+    }
+  }
+
   if (!seatingData || !config || !classroomGrid) {
     return (
       <AppLayout>
         <div className="mx-auto max-w-lg text-center">
           <h1 className="text-2xl font-bold text-[var(--grit-gold)]">2D Seating Editor</h1>
-          <p className="mt-4 text-sm text-[var(--grit-cream)]/55">
-            Loading seating data...
-          </p>
+          
+          {loadingTimeout ? (
+            <div className="mt-4 space-y-3">
+              <p className="text-sm text-red-400 font-semibold">
+                Loading timeout exceeded (5 seconds)
+              </p>
+              <p className="text-xs text-[var(--grit-cream)]/55">
+                Check browser console for detailed diagnostics
+              </p>
+              <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-left text-xs text-[var(--grit-cream)]/70">
+                <p className="font-semibold mb-2">Diagnostic Information:</p>
+                <p>seatingData: {seatingData ? 'loaded' : 'null/undefined'}</p>
+                <p>config: {config ? 'loaded' : 'null/undefined'}</p>
+                <p>classroomGrid: {classroomGrid ? 'loaded' : 'null/undefined'}</p>
+                <p>selectedRoom: {selectedRoom || 'none'}</p>
+              </div>
+            </div>
+          ) : loadingError ? (
+            <div className="mt-4 space-y-3">
+              <p className="text-sm text-red-400 font-semibold">
+                {loadingError}
+              </p>
+              <button
+                onClick={() => navigate('/seating')}
+                className="text-xs text-[var(--grit-gold)] hover:underline"
+              >
+                Return to Seating Results
+              </button>
+            </div>
+          ) : (
+            <p className="mt-4 text-sm text-[var(--grit-cream)]/55">
+              Loading seating data...
+            </p>
+          )}
         </div>
       </AppLayout>
     )
   }
 
-  // Generate bench layout using actual seat numbers from data (not local calculation)
-  console.log('[2D ORIENTATION]', {
-    selectedRoom,
-    roomConfig: {
-      roomName: activeRoom?.roomName,
-      orientation: activeRoom?.orientation,
-      rows: activeRoom?.rows,
-      columns: activeRoom?.columns,
-      studentsPerBench: activeRoom?.studentsPerBench
-    }
-  })
-  console.log('[2D GRID BUILD]', {
-    selectedRoom,
-    filteredSeats: roomSeating.length,
-    classroomGrid
-  })
-  console.log('[2D GRID SAMPLE]', roomSeating.slice(0, 5).map(s => ({
-    seatNo: s.seatNo || s.seatingNo,
-    benchNo: s.benchNo,
-    room: s.room || s.roomName,
-    studentName: s.studentName
-  })))
+  // Generate ALL benches based on room capacity (rows × columns)
+  // This ensures the complete room layout is rendered, including empty seats
+  const totalBenches = classroomGrid.rows * classroomGrid.columns
+  const studentsPerBench = classroomGrid.studentsPerBench
   
-  // Group seats by bench number from the actual seating data
+  // Group existing assignments by bench number
   const byBench = {}
   roomSeating.forEach(seat => {
     const benchNo = seat.benchNo
@@ -475,22 +660,21 @@ export default function SeatingEditor2DPage() {
     seats.sort((a, b) => (a.seatIndex || 0) - (b.seatIndex || 0))
   })
   
-  // Get all unique bench numbers and sort them
-  const benchNumbers = Object.keys(byBench).map(Number).sort((a, b) => a - b)
-  
-  // Generate benches from actual data
-  const benches = benchNumbers.map(benchNo => {
-    const benchSeats = byBench[benchNo] || []
-    return {
+  // Generate benches directly from assignments (assignments already include empty seats)
+  const benches = []
+  for (let benchNo = 1; benchNo <= totalBenches; benchNo++) {
+    const existingSeats = byBench[benchNo] || []
+    
+    benches.push({
       benchNumber: benchNo,
-      seats: benchSeats
-    }
-  })
+      seats: existingSeats
+    })
+  }
   
   // Convert benches to grid based on orientation (same logic as Dashboard preview)
   const gridBenchMap = []
   const { rows, columns, orientation } = classroomGrid
-  
+
   if (orientation === 'vertical') {
     // Vertical: column-major layout
     // B1 B7 B13 B19
@@ -500,7 +684,8 @@ export default function SeatingEditor2DPage() {
       const row = []
       for (let c = 0; c < columns; c++) {
         // In vertical mode, bench at position (r, c) is at index c * rows + r
-        row.push(benches[c * rows + r] ?? null)
+        const benchIndex = c * rows + r
+        row.push(benches[benchIndex] || null)
       }
       gridBenchMap.push(row)
     }
@@ -511,37 +696,28 @@ export default function SeatingEditor2DPage() {
     for (let r = 0; r < rows; r++) {
       const row = []
       for (let c = 0; c < columns; c++) {
-        row.push(benches[r * columns + c] ?? null)
+        const benchIndex = r * columns + c
+        row.push(benches[benchIndex] || null)
       }
       gridBenchMap.push(row)
     }
   }
-  
-  console.log('[2D GRID BENCHES]', {
-    selectedRoom,
-    orientation,
-    rows,
-    columns,
-    benchNumbers: benches.map(b => b.benchNumber),
-    gridBenchMap: gridBenchMap.map(row => row.map(b => b?.benchNumber ?? null))
-  })
-  
-  console.log('[2D BENCH MAP]', {
-    selectedRoom,
-    benchCount: benches.length,
-    benchNumbers: benches.map(b => b.benchNumber),
-    firstBench: benches[0],
-    lastBench: benches[benches.length - 1]
-  })
-  console.log('[2D GRID DATA]', {
-    selectedRoom,
-    classroomGrid,
-    benches: benches.map(b => ({
-      benchNumber: b.benchNumber,
-      seatCount: b.seats.length,
-      occupiedSeats: b.seats.filter(s => s.studentName).length,
-      sampleSeat: b.seats[0]
-    }))
+
+  // Calculate summary statistics
+  const totalCapacity = totalBenches * studentsPerBench
+  const occupiedCount = roomSeating.filter(s => s.status === 'Occupied').length
+  const emptyCount = roomSeating.filter(s => s.status === 'Empty').length
+
+  // Diagnostic logging before rendering
+  console.log('[2D EDITOR RENDER DIAGNOSTICS]', {
+    roomSeatingCount: roomSeating.length,
+    availableRooms: availableRooms.length,
+    selectedRoom: selectedRoom || 'none',
+    classroomGrid: classroomGrid ? 'loaded' : 'null',
+    activeRoom: activeRoom ? 'loaded' : 'null',
+    totalCapacity,
+    occupiedCount,
+    emptyCount,
   })
 
   const hasConflicts = conflicts.size > 0
@@ -600,6 +776,23 @@ export default function SeatingEditor2DPage() {
           </select>
         </div>
 
+        <div className="mb-4 rounded-xl border border-[var(--grit-brown-600)]/50 bg-[var(--grit-brown-800)]/30 p-4">
+          <div className="flex flex-wrap gap-6 text-sm">
+            <div>
+              <span className="text-[var(--grit-cream)]/55">Room Capacity:</span>
+              <span className="ml-2 font-semibold text-[var(--grit-gold)]">{totalCapacity}</span>
+            </div>
+            <div>
+              <span className="text-[var(--grit-cream)]/55">Occupied Seats:</span>
+              <span className="ml-2 font-semibold text-[var(--grit-cream)]">{occupiedCount}</span>
+            </div>
+            <div>
+              <span className="text-[var(--grit-cream)]/55">Empty Seats:</span>
+              <span className="ml-2 font-semibold text-[var(--grit-cream)]/55">{emptyCount}</span>
+            </div>
+          </div>
+        </div>
+
         <div className="mb-6 flex flex-wrap gap-3">
           <Button 
             type="button" 
@@ -616,7 +809,61 @@ export default function SeatingEditor2DPage() {
           >
             Reset Auto Seating
           </Button>
+          <Button 
+            type="button" 
+            variant="secondary" 
+            onClick={handleDownloadExcel}
+          >
+            Download Excel
+          </Button>
         </div>
+
+        {/* FEATURE 1: Total Skill Count Dashboard */}
+        {totalSkillCounts.size > 0 && (
+          <div className="mb-6 rounded-xl border border-[var(--grit-brown-600)]/50 bg-[var(--grit-brown-800)]/30 p-4">
+            <h3 className="mb-3 text-sm font-semibold text-[var(--grit-gold)] uppercase tracking-wider">
+              Total Skill Count (CSV Summary)
+            </h3>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {Array.from(totalSkillCounts.entries())
+                .sort((a, b) => b[1] - a[1])
+                .map(([skill, count]) => (
+                  <div key={skill} className="flex items-center justify-between rounded-lg border border-[var(--grit-brown-600)]/30 bg-[var(--grit-brown-900)]/20 px-3 py-2">
+                    <span className="text-sm text-[var(--grit-cream)]">{skill}</span>
+                    <span className="text-sm font-semibold text-[var(--grit-gold)]">{count}</span>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
+
+        {/* FEATURE 2: Class-wise Skill Assignment Summary */}
+        {roomSkillDistribution.size > 0 && (
+          <div className="mb-6 rounded-xl border border-[var(--grit-brown-600)]/50 bg-[var(--grit-brown-800)]/30 p-4">
+            <h3 className="mb-3 text-sm font-semibold text-[var(--grit-gold)] uppercase tracking-wider">
+              Room-wise Skill Distribution
+            </h3>
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              {Array.from(roomSkillDistribution.entries())
+                .sort((a, b) => a[0].localeCompare(b[0]))
+                .map(([roomName, skillMap]) => (
+                  <div key={roomName} className="rounded-lg border border-[var(--grit-brown-600)]/30 bg-[var(--grit-brown-900)]/20 p-3">
+                    <h4 className="mb-2 text-sm font-medium text-[var(--grit-cream)]">{roomName}</h4>
+                    <div className="space-y-1">
+                      {Array.from(skillMap.entries())
+                        .sort((a, b) => b[1] - a[1])
+                        .map(([skill, count]) => (
+                          <div key={skill} className="flex items-center justify-between text-xs">
+                            <span className="text-[var(--grit-cream)]/70">{skill}</span>
+                            <span className="font-semibold text-[var(--grit-gold)]">{count}</span>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
 
         <div className="rounded-xl border border-[var(--grit-brown-600)]/50 bg-[var(--grit-brown-800)]/30 p-6">
           <div className="mb-4 flex items-center justify-between">
@@ -680,7 +927,7 @@ export default function SeatingEditor2DPage() {
         </div>
 
         <div className="mt-6 rounded-xl border border-[var(--grit-brown-600)]/50 bg-[var(--grit-brown-800)]/30 p-6">
-          <h2 className="mb-4 text-lg font-semibold text-[var(--grit-cream)]">Current Seating</h2>
+          <h2 className="mb-4 text-lg font-semibold text-[var(--grit-cream)]">All Seats ({roomSeating.length})</h2>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -695,27 +942,29 @@ export default function SeatingEditor2DPage() {
               </thead>
               <tbody>
                 {roomSeating.map((seat) => {
-                  const fullSkillName = seat.skillName || seat.skill || seat.skillCode
+                  const fullSkillName = seat.skillName || seat.skill || seat.skillCode || ''
                   const skillShortCode = getSkillShortCode(fullSkillName)
+                  const isOccupied = seat.status === 'Occupied'
+                  const seatNo = seat.seatNo || '?'
                   return (
                     <tr 
-                      key={seat.seatNo} 
+                      key={seatNo} 
                       className={`border-b border-[var(--grit-brown-600)]/30 ${
-                        conflicts.has(seat.seatNo) ? 'bg-red-500/10' : ''
-                      }`}
+                        conflicts.has(seatNo) ? 'bg-red-500/10' : ''
+                      } ${!isOccupied ? 'bg-[var(--grit-brown-900)]/20' : ''}`}
                     >
-                      <td className="px-4 py-2 text-[var(--grit-cream)]">{seat.seatNo || seat.seatingNo}</td>
-                      <td className="px-4 py-2 text-[var(--grit-cream)]">{seat.benchNo}</td>
-                      <td className="px-4 py-2 text-[var(--grit-cream)]">{seat.room || seat.roomName}</td>
-                      <td className="px-4 py-2 text-[var(--grit-cream)]">{seat.studentName || seat.student || '-'}</td>
+                      <td className="px-4 py-2 text-[var(--grit-cream)]">{seatNo}</td>
+                      <td className="px-4 py-2 text-[var(--grit-cream)]">{seat.benchNo || '?'}</td>
+                      <td className="px-4 py-2 text-[var(--grit-cream)]">{seat.roomName || selectedRoom || '?'}</td>
+                      <td className="px-4 py-2 text-[var(--grit-cream)]">{seat.studentName || '-'}</td>
                       <td className="px-4 py-2 text-[var(--grit-cream)]" title={fullSkillName}>{skillShortCode || '-'}</td>
                       <td className="px-4 py-2">
                         <span className={`inline-block rounded px-2 py-1 text-xs ${
-                          seat.status === 'Occupied' || seat.studentName
+                          isOccupied
                             ? 'bg-[var(--grit-gold)]/20 text-[var(--grit-gold)]'
                             : 'bg-[var(--grit-brown-600)]/30 text-[var(--grit-cream)]/55'
                         }`}>
-                          {seat.studentName ? 'Occupied' : 'Empty'}
+                          {isOccupied ? 'Occupied' : 'Empty'}
                         </span>
                       </td>
                     </tr>
@@ -727,5 +976,13 @@ export default function SeatingEditor2DPage() {
         </div>
       </div>
     </AppLayout>
+  )
+}
+
+export default function SeatingEditor2DPage() {
+  return (
+    <ErrorBoundary>
+      <SeatingEditor2DPageContent />
+    </ErrorBoundary>
   )
 }

@@ -40,17 +40,47 @@ function FloatingLabel({ position, children, fontSize = 0.24, color = '#f5ebe0',
   )
 }
 
-function SeatMarker({ assignment, offsetX, zoomLevel = 1 }) {
+function SeatMarker({ assignment, offsetX, zoomLevel = 1, performanceMode = false }) {
   const isEmpty = assignment.status === 'Empty'
   const color = isEmpty ? '#3d281c' : skillToColor(assignment.skillCode || assignment.skill)
   const firstName = getFirstName(assignment.studentName)
   const skillCode = getSkillShortCode(assignment.skillCode || assignment.skill)
   const seatLabel = formatSeatLabel(assignment.seatNo || assignment.seatingNo)
-  
+  const bookingId = assignment.bookingId || ''
+
+  // Diagnostic logging for undefined values
+  if (!isEmpty && !performanceMode) {
+    if (!assignment.studentName || !assignment.skillCode || !assignment.skill) {
+      console.warn('[3D SEAT MARKER] Undefined student data:', {
+        seatNo: assignment.seatNo || assignment.seatingNo,
+        studentName: assignment.studentName,
+        skillCode: assignment.skillCode,
+        skill: assignment.skill,
+        bookingId: assignment.bookingId,
+        status: assignment.status,
+        room: assignment.room || assignment.roomName,
+        fullAssignment: assignment
+      })
+    }
+  }
+
+  // Performance mode: hide all text labels and disable shadows
+  if (performanceMode) {
+    return (
+      <group position={[offsetX, 0, 0]}>
+        <mesh position={[0, 0.45, 0]}>
+          <boxGeometry args={[0.75, 0.58, 0.7]} />
+          <meshStandardMaterial color={color} metalness={0.12} roughness={0.5} />
+        </mesh>
+      </group>
+    )
+  }
+
   // Zoom-based visibility: show less detail when zoomed out
   const showFullDetails = zoomLevel > 0.6
   const showSkill = zoomLevel > 0.4
   const showSeat = zoomLevel > 0.3
+  const showBookingId = zoomLevel > 0.7 && bookingId
 
   return (
     <group position={[offsetX, 0, 0]}>
@@ -69,13 +99,16 @@ function SeatMarker({ assignment, offsetX, zoomLevel = 1 }) {
           <FloatingLabel position={[0, 0, 0]} fontSize={0.16} color="#f5ebe0" visible={showSeat}>
             {seatLabel}
           </FloatingLabel>
+          <FloatingLabel position={[0, -0.15, 0]} fontSize={0.12} color="#c9a227" visible={showBookingId}>
+            {bookingId}
+          </FloatingLabel>
         </group>
       )}
     </group>
   )
 }
 
-function Bench3D({ benchNumber, assignments, position, zoomLevel = 1, studentsPerBench = 2 }) {
+function Bench3D({ benchNumber, assignments, position, zoomLevel = 1, studentsPerBench = 2, performanceMode = false }) {
   const spb = Number(studentsPerBench) || 2
   const startX = -((spb - 1) * SEAT_SPACING) / 2
 
@@ -108,23 +141,26 @@ function Bench3D({ benchNumber, assignments, position, zoomLevel = 1, studentsPe
         <boxGeometry args={[BENCH_W - 0.25, 0.05, BENCH_D - 0.2]} />
         <meshStandardMaterial color="#5c3a2e" roughness={0.72} />
       </mesh>
-      <Text
-        position={[0, 0.04, -BENCH_D / 2 - 0.4]}
-        rotation={[-Math.PI / 2, 0, 0]}
-        fontSize={0.18}
-        color="#c9a227"
-        anchorX="center"
-        outlineWidth={0.012}
-        outlineColor="#1a0f0a"
-      >
-        {`B${benchNumber}`}
-      </Text>
+      {!performanceMode && (
+        <Text
+          position={[0, 0.04, -BENCH_D / 2 - 0.4]}
+          rotation={[-Math.PI / 2, 0, 0]}
+          fontSize={0.18}
+          color="#c9a227"
+          anchorX="center"
+          outlineWidth={0.012}
+          outlineColor="#1a0f0a"
+        >
+          {`B${benchNumber}`}
+        </Text>
+      )}
       {seatAssignments.map((a) => (
         <SeatMarker
           key={`${benchNumber}-${a.seatIndex}`}
           assignment={a}
           offsetX={startX + (a.seatIndex || 0) * SEAT_SPACING}
           zoomLevel={zoomLevel}
+          performanceMode={performanceMode}
         />
       ))}
     </group>
@@ -199,7 +235,7 @@ function CameraAnimator({ preset, floorW, floorD, controlsRef }) {
   return null
 }
 
-function SceneContent({ roomNumber, assignments, roomConfig, cameraPreset, controlsRef }) {
+function SceneContent({ roomNumber, assignments, roomConfig, cameraPreset, controlsRef, performanceMode = false }) {
   const { camera } = useThree()
   const [zoomLevel, setZoomLevel] = useState(1)
   
@@ -209,14 +245,16 @@ function SceneContent({ roomNumber, assignments, roomConfig, cameraPreset, contr
     const orientation = roomConfig?.orientation || 'horizontal'
     const studentsPerBench = Number(roomConfig?.studentsPerBench) || 2
 
-    console.log('[3D ROOM]', {
-      roomName: roomConfig?.roomName || roomNumber,
-      rows,
-      columns,
-      studentsPerBench,
-      orientation,
-      expectedBenches: rows * columns
-    })
+    if (!performanceMode) {
+      console.log('[3D ROOM]', {
+        roomName: roomConfig?.roomName || roomNumber,
+        rows,
+        columns,
+        studentsPerBench,
+        orientation,
+        expectedBenches: rows * columns
+      })
+    }
 
     // Group assignments by bench number
     const byBench = {}
@@ -249,12 +287,14 @@ function SceneContent({ roomNumber, assignments, roomConfig, cameraPreset, contr
       })
     }
 
-    console.log('[3D RENDERED BENCHES]', {
-      renderedBenchCount: positioned.length,
-      expectedBenchCount: rows * columns,
-      occupiedBenchCount: Object.keys(byBench).length,
-      emptyBenchCount: positioned.length - Object.keys(byBench).length
-    })
+    if (!performanceMode) {
+      console.log('[3D RENDERED BENCHES]', {
+        renderedBenchCount: positioned.length,
+        expectedBenchCount: rows * columns,
+        occupiedBenchCount: Object.keys(byBench).length,
+        emptyBenchCount: positioned.length - Object.keys(byBench).length
+      })
+    }
 
     return { positioned, floorW, floorD, rows, columns }
   }, [assignments, roomConfig, roomNumber])
@@ -280,7 +320,7 @@ function SceneContent({ roomNumber, assignments, roomConfig, cameraPreset, contr
         position={[14, 22, 12]}
         intensity={1.3}
         castShadow
-        shadow-mapSize={[2048, 2048]}
+        shadow-mapSize={performanceMode ? [1024, 1024] : [2048, 2048]}
         shadow-camera-far={60}
         shadow-camera-left={-25}
         shadow-camera-right={25}
@@ -289,7 +329,7 @@ function SceneContent({ roomNumber, assignments, roomConfig, cameraPreset, contr
       />
       <pointLight position={[-10, 12, -8]} intensity={0.45} color="#c9a227" />
 
-      <RoomTitle roomNumber={roomNumber} z={-layout.floorD / 2 - 2} />
+      {!performanceMode && <RoomTitle roomNumber={roomNumber} z={-layout.floorD / 2 - 2} />}
       <ClassroomFloor width={layout.floorW} depth={layout.floorD} />
 
       {layout.positioned.map(({ benchNumber, assignments: seats, position }) => (
@@ -300,6 +340,7 @@ function SceneContent({ roomNumber, assignments, roomConfig, cameraPreset, contr
           position={position}
           zoomLevel={zoomLevel}
           studentsPerBench={Number(roomConfig?.studentsPerBench) || 2}
+          performanceMode={performanceMode}
         />
       ))}
 
@@ -331,7 +372,7 @@ function SceneContent({ roomNumber, assignments, roomConfig, cameraPreset, contr
   )
 }
 
-export default function Classroom3DScene({ roomNumber, assignments, roomConfig }) {
+export default function Classroom3DScene({ roomNumber, assignments, roomConfig, performanceMode = false }) {
   const controlsRef = useRef()
   const [cameraPreset, setCameraPreset] = useState('reset')
 
@@ -361,14 +402,14 @@ export default function Classroom3DScene({ roomNumber, assignments, roomConfig }
       <div className="h-[640px] overflow-hidden rounded-2xl border border-[var(--grit-brown-600)] bg-[var(--grit-brown-900)]">
         <Canvas
           shadows
-          dpr={[1, 2]}
+          dpr={performanceMode ? [1, 1] : [1, 2]}
           camera={{
             position: [0, 14, 20],
             fov: 40,
             near: 0.1,
             far: Math.max(120, dist * 4),
           }}
-          gl={{ antialias: true }}
+          gl={{ antialias: !performanceMode }}
           style={{ touchAction: 'none' }}
         >
           <SceneContent
@@ -377,6 +418,7 @@ export default function Classroom3DScene({ roomNumber, assignments, roomConfig }
             roomConfig={roomConfig}
             cameraPreset={cameraPreset}
             controlsRef={controlsRef}
+            performanceMode={performanceMode}
           />
         </Canvas>
       </div>

@@ -15,6 +15,11 @@ function BenchBlock({ benchNumber, seats }) {
               <span className="font-medium tabular-nums text-[var(--grit-gold)]">
                 Seat {seat.seatingNo}
               </span>
+              {seat.bookingId && (
+                <span className="text-[var(--grit-cream)]/60">
+                  {' '}({seat.bookingId})
+                </span>
+              )}
               <span className="text-[var(--grit-cream)]/80"> → {seat.studentName}</span>
               <span className="text-[var(--grit-cream)]/45"> ({seat.skill})</span>
             </li>

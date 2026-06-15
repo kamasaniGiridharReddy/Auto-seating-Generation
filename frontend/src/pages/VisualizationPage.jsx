@@ -69,48 +69,68 @@ export default function VisualizationPage() {
 
   const activeRoom = classrooms.find((r) => r.id === roomId) ?? classrooms[0]
 
-  const roomAssignments = useMemo(() => {
-    if (!results?.finalSeating || !activeRoom) return []
-    const roomName = activeRoom.roomName ?? activeRoom.roomNumber ?? ''
-    const filtered = results.finalSeating.filter(
-      (a) => a.room === roomName || a.roomName === roomName,
+  // Normalize room name for safe comparison
+  const normalizeRoomName = (room) => {
+    return String(room || '')
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, ' ')
+  }
+
+  // Universal room name extractor - checks all possible field names
+  const getRoomName = (seat) => {
+    return (
+      seat.roomName ||
+      seat.room ||
+      seat.Room ||
+      seat.ROOM ||
+      seat.room_name ||
+      seat.classroom ||
+      seat.roomNumber ||
+      ''
     )
-    const occupiedSeats = filtered.filter(a => a.status === 'Occupied').length
-    console.log('[3D INPUT]', {
-      roomId: activeRoom?.id,
-      roomName,
-      roomConfig: {
-        roomName: activeRoom?.roomName,
-        rows: activeRoom?.rows,
-        columns: activeRoom?.columns,
-        studentsPerBench: activeRoom?.studentsPerBench,
-        orientation: activeRoom?.orientation
-      },
-      occupiedSeats,
-      studentCount: occupiedSeats,
-      totalSeats: results.finalSeating.length,
-      resultsConfigSource: results?.config ? 'results.config' : 'none',
-      resultsConfigClassrooms: results?.config?.classrooms?.map(r => ({
-        roomName: r.roomName,
-        rows: r.rows,
-        columns: r.columns,
-        studentsPerBench: r.studentsPerBench,
-        orientation: r.orientation
-      }))
+  }
+
+  const roomAssignments = useMemo(() => {
+    if (!results?.assignments || !activeRoom) return []
+    const roomName = activeRoom.roomName ?? activeRoom.roomNumber ?? ''
+    
+    // DIAGNOSTICS: Check room field mapping
+    console.log('[3D ROOM FILTERING] Active Room:', roomName)
+    console.log('[3D ROOM FILTERING] Total assignments:', results.assignments.length)
+    
+    // Filter assignments for this room (directly from assignments array)
+    const filtered = results.assignments.filter(
+      (a) => normalizeRoomName(a.roomName) === normalizeRoomName(roomName),
+    )
+    
+    console.log('[3D ROOM FILTERING] Matched assignments:', filtered.length)
+    
+    // Sort by bench number, then seat index to ensure physical ordering
+    const sorted = filtered.sort((a, b) => {
+      if (a.benchNo !== b.benchNo) {
+        return a.benchNo - b.benchNo
+      }
+      return a.seatIndex - b.seatIndex
     })
-    console.log('[3D FILTERED BENCHES]', {
-      filteredCount: filtered.length,
-      occupiedSeats,
-      studentCount: occupiedSeats,
-      totalSeats: results.finalSeating.length
-    })
-    return filtered
+    
+    // Validation: occupiedSeats === records found in assignments for this room
+    const occupiedSeats = sorted.filter(a => a.status === 'Occupied').length
+    const emptySeats = sorted.filter(a => a.status === 'Empty').length
+    console.log('[3D ROOM FILTERING] Occupied seats:', occupiedSeats)
+    console.log('[3D ROOM FILTERING] Empty seats:', emptySeats)
+    
+    // Return assignments in physical order
+    return sorted
   }, [results, activeRoom])
 
   const skills = useMemo(
     () => [...new Set(roomAssignments.map((a) => a.skillCode).filter(Boolean))],
     [roomAssignments],
   )
+
+  const occupiedCount = roomAssignments.filter((a) => a.status === 'Occupied').length
+  const performanceMode = occupiedCount > 1000
 
   if (!results?.finalSeating?.length) {
     return (
@@ -168,10 +188,22 @@ export default function VisualizationPage() {
           <SkillLegend skills={skills} />
         </div>
 
+        {performanceMode && (
+          <div className="mb-4 rounded-xl border border-[var(--grit-amber-600)] bg-[var(--grit-amber-900)]/30 px-4 py-3">
+            <p className="text-sm font-medium text-[var(--grit-amber-200)]">
+              ⚠️ Large dataset detected. Performance Mode enabled.
+            </p>
+            <p className="mt-1 text-xs text-[var(--grit-amber-200)]/70">
+              Student names, skills, and booking IDs hidden for better performance.
+            </p>
+          </div>
+        )}
+
         <Classroom3DScene
           roomNumber={activeRoom?.roomName ?? activeRoom?.roomNumber}
           assignments={roomAssignments}
           roomConfig={activeRoom}
+          performanceMode={performanceMode}
         />
 
         <p className="mt-3 text-center text-xs text-[var(--grit-cream)]/40">

@@ -25,6 +25,7 @@ export const STUDENT_UID_COLUMN = 'Student UID'
 
 /** Preview table shows key columns; full data kept in row objects. */
 export const CSV_PREVIEW_COLUMNS = [
+  'Booking ID',
   'Student UID',
   'Student Name',
   'Section',

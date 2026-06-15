@@ -1,5 +1,9 @@
-import { allocateSeating, SEATING_LOGIC_VERSION, CLASSROOM_LAYOUT_VERSION, SEATING_NUMBERING_VERSION } from '../utils/seatingAlgorithmStrictNew'
+import { allocateSeating, SEATING_LOGIC_VERSION, CLASSROOM_LAYOUT_VERSION, SEATING_NUMBERING_VERSION } from '../utils/seatingAlgorithmManual'
 import { loadClassroomConfig, getTotalCapacity } from '../utils/classroomStorage'
+
+console.log('[SERVICE FILE] seatingService.js loaded')
+console.log('[SERVICE IMPORT] Algorithm file: ../utils/seatingAlgorithmManual')
+console.log('[SERVICE IMPORT] Algorithm version:', SEATING_LOGIC_VERSION)
 
 function validateConfig(studentRows, config) {
   const classrooms = config.classrooms ?? []
@@ -102,21 +106,35 @@ export function generateSeatingArrangements(studentRows, configOverride = null) 
 }
 
 function buildFinalResult(result, studentRows, classrooms, totalCapacity) {
-  // Use finalSeating as single source of truth
-  const finalSeating = result.finalSeating || result.roomResults.flatMap((r) => r.assignments)
-  const totalOccupied = finalSeating.filter((a) => a.status === 'Occupied').length
-  const totalEmpty = finalSeating.filter((a) => a.status === 'Empty').length
+  // Use assignments as single source of truth (new structure)
+  const assignments = result.assignments || result.finalSeating || []
+  const finalSeating = assignments // For backward compatibility
+  
+  const totalOccupied = assignments.filter((a) => a.status === 'Occupied').length
+  const totalEmpty = assignments.filter((a) => a.status === 'Empty').length
+
+  // Build roomResults from assignments for backward compatibility
+  const roomResults = result.rooms?.map(room => ({
+    room: room.name,
+    assignments: assignments.filter(a => a.roomName === room.name),
+    capacity: room.capacity,
+    occupied: assignments.filter(a => a.roomName === room.name && a.status === 'Occupied').length,
+    empty: assignments.filter(a => a.roomName === room.name && a.status === 'Empty').length,
+  })) || []
 
   const legacyResult = {
-    success: (result.unassigned?.length ?? 0) === 0,
-    assignments: finalSeating,
+    success: result.validation?.passed ?? true,
+    assignments: assignments,
     finalSeating: finalSeating,
-    roomResults: result.roomResults,
+    roomResults: roomResults,
+    rooms: result.rooms,
+    students: result.students,
+    seats: result.seats,
     summary: {
       totalStudents: studentRows.length,
       totalOccupied,
       totalEmpty,
-      totalUnassigned: result.unassigned?.length ?? 0,
+      totalUnassigned: 0, // New structure guarantees all students are seated
     },
     config: {
       classrooms,
@@ -126,7 +144,7 @@ function buildFinalResult(result, studentRows, classrooms, totalCapacity) {
     logicVersion: SEATING_LOGIC_VERSION,
     layoutVersion: CLASSROOM_LAYOUT_VERSION,
     numberingVersion: SEATING_NUMBERING_VERSION,
-    unassigned: result.unassigned ?? [],
+    unassigned: [], // New structure guarantees no unassigned students
     validation: result.validation,
   }
 

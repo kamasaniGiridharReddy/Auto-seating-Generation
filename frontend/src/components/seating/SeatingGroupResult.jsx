@@ -11,6 +11,7 @@ const RESULT_COLUMNS = [
   { key: 'seatingNo', label: 'Seating no' },
   { key: 'roomNo', label: 'Room NO' },
   { key: 'benchLabel', label: 'Bench' },
+  { key: 'bookingId', label: 'Booking ID' },
   { key: 'studentName', label: 'Student name' },
   { key: 'section', label: 'Section' },
   { key: 'skill', label: 'Skill' },
